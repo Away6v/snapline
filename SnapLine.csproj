@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\snapline.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
+    <AssemblyName>SnapLine</AssemblyName>
+    <RootNamespace>SnapLine</RootNamespace>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\snapline.ico" />
+    <Compile Remove="work\**;outputs\**" />
+  </ItemGroup>
+</Project>
