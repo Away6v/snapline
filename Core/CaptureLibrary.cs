@@ -79,6 +79,7 @@ public sealed class CaptureLibrary
         string? created = null;
         try
         {
+            bitmap = await Task.Run(() => Detach(bitmap));
             var hash = await Task.Run(() => Fingerprint(bitmap));
             if (state.Captures.Any(x => x.Hash == hash)) return;
             created = System.IO.Path.Combine(Storage.Inbox, $"Capture-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.png");
@@ -180,8 +181,19 @@ public sealed class CaptureLibrary
         var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
         var frame = decoder.Frames[0];
         if ((long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new IOException(Words.T("图片像素过大。", "Image dimensions are too large."));
-        frame.Freeze();
-        return frame;
+        return Detach(frame);
+    }
+    private static BitmapSource Detach(BitmapSource frame)
+    {
+        if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0 || (long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new IOException(Words.T("图片像素过大。", "Image dimensions are too large."));
+        // 解码帧携带线程相关的元数据；转成独立像素源后再跨线程用于剪贴板和预览。
+        var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
+        var stride = checked(frame.PixelWidth * 4);
+        var pixels = new byte[checked(stride * frame.PixelHeight)];
+        converted.CopyPixels(pixels, stride, 0);
+        var bitmap = BitmapSource.Create(frame.PixelWidth, frame.PixelHeight, frame.DpiX, frame.DpiY, PixelFormats.Bgra32, null, pixels, stride);
+        bitmap.Freeze();
+        return bitmap;
     }
     private static (BitmapSource Thumb, string Hash) Read(string path)
     {

@@ -12,6 +12,8 @@ if ($LASTEXITCODE -ne 0) { throw '发布构建失败。' }
 Copy-Item (Join-Path $PSScriptRoot '../README.md') $publish
 Copy-Item (Join-Path $PSScriptRoot '../LICENSE') $publish
 Copy-Item (Join-Path $PSScriptRoot '../THIRD-PARTY-NOTICES.md') $publish
+Copy-Item (Join-Path $PSScriptRoot '../Assets') $publish -Recurse -Force
+Copy-Item (Join-Path $PSScriptRoot '../docs') $publish -Recurse -Force
 $archive = Join-Path $output "SnapLine-0.1.0-$Runtime.zip"
 Compress-Archive -Path "$publish/*" -DestinationPath $archive -Force
 $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
