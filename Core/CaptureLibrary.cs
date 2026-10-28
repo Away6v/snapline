@@ -15,7 +15,7 @@ public sealed class CaptureLibrary
 {
     private readonly State state;
     private readonly SemaphoreSlim gate = new(1);
-    private int automaticCapacity = 8;
+    private int automaticCapacity = 100;
     public event Action? Changed;
     public event Action<string>? Error;
     public IReadOnlyList<Capture> Items => state.Captures;
@@ -36,13 +36,20 @@ public sealed class CaptureLibrary
                 var image = await Task.Run(() => Read(item.Path));
                 item.Thumbnail = image.Thumb;
                 item.Hash = image.Hash;
+                item.PixelWidth = image.Full.PixelWidth;
+                item.PixelHeight = image.Full.PixelHeight;
+                if (Storage.Owns(item.Path) && image.AlphaRepaired)
+                {
+                    try { await Task.Run(() => SavePng(item.Path, image.Full)); }
+                    catch { }
+                }
             }
             catch { state.Captures.Remove(item); }
         }
         Save();
         Changed?.Invoke();
     }
-    public async Task<bool> ImportAsync(string path, bool notify = true)
+    public async Task<bool> ImportAsync(string path, bool notify = true, System.Drawing.Point? animationOrigin = null)
     {
         await gate.WaitAsync();
         try
@@ -55,11 +62,13 @@ public sealed class CaptureLibrary
                 if (samePath.Hash == image.Hash) return true;
                 samePath.Hash = image.Hash;
                 samePath.Thumbnail = image.Thumb;
+                samePath.PixelWidth = image.Full.PixelWidth;
+                samePath.PixelHeight = image.Full.PixelHeight;
             }
             else
             {
                 if (state.Captures.Any(x => x.Hash == image.Hash)) return true;
-                state.Captures.Add(new Capture { Path = path, Hash = image.Hash, Thumbnail = image.Thumb });
+                state.Captures.Add(new Capture { Path = path, Hash = image.Hash, Thumbnail = image.Thumb, PixelWidth = image.Full.PixelWidth, PixelHeight = image.Full.PixelHeight, AnimationOrigin = animationOrigin });
             }
             await TrimAsync();
             Save();
@@ -73,7 +82,7 @@ public sealed class CaptureLibrary
         }
         finally { gate.Release(); }
     }
-    public async Task ImportClipboardAsync(BitmapSource bitmap)
+    public async Task ImportClipboardAsync(BitmapSource bitmap, System.Drawing.Point? animationOrigin = null)
     {
         await gate.WaitAsync();
         string? created = null;
@@ -91,7 +100,7 @@ public sealed class CaptureLibrary
                 using (var stream = File.Create(destination)) encoder.Save(stream);
                 return Read(destination).Thumb;
             });
-            state.Captures.Add(new Capture { Path = created, Hash = hash, Thumbnail = thumb });
+            state.Captures.Add(new Capture { Path = created, Hash = hash, Thumbnail = thumb, PixelWidth = bitmap.PixelWidth, PixelHeight = bitmap.PixelHeight, AnimationOrigin = animationOrigin });
             created = null;
             await TrimAsync();
             Save();
@@ -106,7 +115,7 @@ public sealed class CaptureLibrary
     }
     public async Task SetCapacityAsync(int visible)
     {
-        automaticCapacity = Math.Max(1, visible);
+        automaticCapacity = Math.Max(100, visible);
         await gate.WaitAsync();
         try { await TrimAsync(); Save(); Changed?.Invoke(); }
         finally { gate.Release(); }
@@ -175,15 +184,23 @@ public sealed class CaptureLibrary
     }
     public static BitmapSource LoadFull(string path)
     {
+        return LoadFullWithInfo(path).Image;
+    }
+    private static (BitmapSource Image, bool AlphaRepaired) LoadFullWithInfo(string path)
+    {
         var info = new FileInfo(path);
         if (info.Length > 64L * 1024 * 1024) throw new IOException(Words.T("图片超过 64 MB 限制。", "Image exceeds the 64 MB limit."));
         using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
         var frame = decoder.Frames[0];
         if ((long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new IOException(Words.T("图片像素过大。", "Image dimensions are too large."));
-        return Detach(frame);
+        return DetachWithInfo(frame);
     }
     private static BitmapSource Detach(BitmapSource frame)
+    {
+        return DetachWithInfo(frame).Image;
+    }
+    private static (BitmapSource Image, bool AlphaRepaired) DetachWithInfo(BitmapSource frame)
     {
         if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0 || (long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new IOException(Words.T("图片像素过大。", "Image dimensions are too large."));
         // 解码帧携带线程相关的元数据；转成独立像素源后再跨线程用于剪贴板和预览。
@@ -191,18 +208,44 @@ public sealed class CaptureLibrary
         var stride = checked(frame.PixelWidth * 4);
         var pixels = new byte[checked(stride * frame.PixelHeight)];
         converted.CopyPixels(pixels, stride, 0);
+        var allTransparent = true;
+        var hasColor = false;
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            if (pixels[i + 3] != 0) allTransparent = false;
+            if (pixels[i] != 0 || pixels[i + 1] != 0 || pixels[i + 2] != 0) hasColor = true;
+            if (!allTransparent && hasColor) break;
+        }
+        var alphaRepaired = allTransparent && hasColor;
+        if (alphaRepaired)
+            for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
         var bitmap = BitmapSource.Create(frame.PixelWidth, frame.PixelHeight, frame.DpiX, frame.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         bitmap.Freeze();
-        return bitmap;
+        return (bitmap, alphaRepaired);
     }
-    private static (BitmapSource Thumb, string Hash) Read(string path)
+    private static void SavePng(string path, BitmapSource bitmap)
     {
-        var full = LoadFull(path);
+        var temporary = path + ".snapline.tmp";
+        try
+        {
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using (var stream = File.Create(temporary)) encoder.Save(stream);
+            File.Move(temporary, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+    private static (BitmapSource Thumb, string Hash, BitmapSource Full, bool AlphaRepaired) Read(string path)
+    {
+        var (full, alphaRepaired) = LoadFullWithInfo(path);
         var hash = Fingerprint(full);
         var scale = Math.Min(1, 420.0 / Math.Max(full.PixelWidth, full.PixelHeight));
         var thumb = new TransformedBitmap(full, new ScaleTransform(scale, scale));
         thumb.Freeze();
-        return (thumb, hash);
+        return (thumb, hash, full, alphaRepaired);
     }
     private static string Fingerprint(BitmapSource source)
     {

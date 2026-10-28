@@ -41,6 +41,9 @@ internal static class Native
         var name = new StringBuilder(128);
         GetClassName(handle, name, name.Capacity);
         if (name.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd") return false;
+        // 最大化窗口也覆盖整个显示器；只有移除常规标题栏和边框的窗口才视作独占全屏。
+        var style = GetWindowLongPtr(handle, -16).ToInt64();
+        if ((style & 0x00C00000L) != 0 || (style & 0x00040000L) != 0) return false;
         if (!GetWindowRect(handle, out var rect)) return false;
         var bounds = screen.Bounds;
         return rect.Left <= bounds.Left && rect.Top <= bounds.Top && rect.Right >= bounds.Right && rect.Bottom >= bounds.Bottom;

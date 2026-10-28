@@ -17,6 +17,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\snapline.ico" />
+    <Resource Include="Assets\snapline.png" />
     <Compile Remove="work\**;outputs\**" />
   </ItemGroup>
 </Project>

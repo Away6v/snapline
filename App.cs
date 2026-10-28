@@ -15,14 +15,16 @@ public sealed class App : Application
     private Forms.NotifyIcon? tray;
     private Collectors? collectors;
     private LineWindow? line;
-    private SettingsWindow? settings;
+    private TrayPanelWindow? trayPanel;
     private State state = new();
     private CaptureLibrary library = null!;
+    private TextLibrary textLibrary = null!;
     private DateTime lastNotice;
     [STAThread]
     public static void Main()
     {
         var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        ThemeScrollBars.Apply(app);
         app.Run();
     }
     protected override async void OnStartup(StartupEventArgs e)
@@ -33,30 +35,49 @@ public sealed class App : Application
         try
         {
             state = Storage.Load();
+            var migrationFailures = Storage.MigrateInbox(state);
             var recovered = Storage.Recovered;
             Words.Language = state.Preferences.Language;
             library = new CaptureLibrary(state);
             library.Error += Notify;
             await library.RestoreAsync();
-            collectors = new Collectors(library, state.Preferences);
+            textLibrary = new TextLibrary(state);
+            textLibrary.Error += Notify;
+            textLibrary.Restore();
+            var cleanupFailures = Storage.CompleteMigration(state, migrationFailures);
+            collectors = new Collectors(library, textLibrary, state.Preferences);
             collectors.Error += Notify;
-            line = new LineWindow(library, state.Preferences, Notify, ShowSettings);
+            line = new LineWindow(library, textLibrary, state.Preferences, Notify);
             MainWindow = line;
             collectors.ToggleRequested += line.Toggle;
+            collectors.ModeToggleRequested += () =>
+            {
+                line.SetDisplayMode(state.Preferences.DisplayMode == "text" ? "screenshot" : "text");
+                library.Save();
+                trayPanel?.RefreshDisplayMode();
+            };
             CreateTray();
-            if (!collectors.RegisterShortcut(state.Preferences.HotkeyModifiers, state.Preferences.HotkeyKey))
-                Notify(Words.T("显示快捷键已被占用，请在设置中修改。", "Show shortcut is already in use. Change it in Settings."));
+            if (!collectors.RegisterShortcut(false, state.Preferences.HotkeyModifiers, state.Preferences.HotkeyKey))
+                Notify(Words.T("显示快捷键已被占用，请在托盘面板中修改。", "Show shortcut is already in use. Change it in the tray panel."));
+            if (!collectors.RegisterShortcut(true, state.Preferences.ModeHotkeyModifiers, state.Preferences.ModeHotkeyKey))
+                Notify(Words.T("模式切换快捷键已被占用，请在托盘面板中修改。", "Mode shortcut is already in use. Change it in the tray panel."));
             if (!collectors.ClipboardAvailable) Notify(Words.T("剪贴板监听启动失败，目录收集仍可用。", "Clipboard listener failed; folder collection is still available."));
             collectors.Rewatch();
             line.Start();
+            if (migrationFailures > 0 || cleanupFailures > 0) Notify(Words.T("部分旧数据未能迁入程序包，请检查 Data 文件夹。", "Some old data could not be moved into the app package. Check the Data folder."));
             if (recovered) Notify(Words.T("配置无法读取，已使用默认设置；原配置已保留为恢复副本。", "Settings could not be read. Defaults are in use; the original was kept as a recovery copy."));
             if (!state.Preferences.OnboardingComplete)
             {
                 MessageBox.Show(Words.T(
-                    "欢迎使用截图晾衣绳！\n\n已默认开启“收集剪贴板图片”：Win+Shift+S 截图和其他纯图片复制会保存在本机。文字、复制的文件和本应用复制的图片会被忽略。\n\n鼠标停留屏幕顶部，或按 Ctrl+Alt+T 展开。单击复制、双击打开、长按用画图编辑，拖出即可分享。\n\n托盘图标 → 设置，可关闭收集、选择目录或更改快捷键。程序不联网，不上传图片。",
-                    "Welcome to SnapLine!\n\nClipboard image collection is ON: Win+Shift+S captures and other copied images are saved locally. Text, copied files, and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or press Ctrl+Alt+T. Click to copy, double-click to open, hold to edit in Paint, or drag to share.\n\nUse the tray → Settings to disable collection, select folders, or change the shortcut. No network access or uploads."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "欢迎使用截图晾衣绳！\n\n已默认开启剪贴板截图与文本收集，内容仅保存在本机。复制的文件及本应用复制的内容会被忽略。\n\n鼠标停留屏幕顶部，或按 Ctrl+Alt+T 展开。托盘右键面板可切换“文本 / 截图”、新建文本及调整收集设置。\n\n截图卡片可复制、预览、编辑或拖出分享；文本卡片可复制、查看和编辑。\n\n右键托盘图标打开控制面板。程序不联网，不上传内容。",
+                    "Welcome to SnapLine!\n\nClipboard image and text collection are on by default. Content stays on this device. Copied files and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or press Ctrl+Alt+T. Right-click the tray icon to switch between Text and Screenshots, create text, and adjust collection settings.\n\nScreenshot cards can be copied, previewed, edited, or dragged to share. Text cards can be copied, viewed, and edited.\n\nSnapLine does not connect to the internet or upload your content."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
                 state.Preferences.OnboardingComplete = true;
                 library.Save();
+                line.Toggle();
+            }
+            else if (Array.Exists(e.Args, arg => arg.Equals("--show", StringComparison.OrdinalIgnoreCase)))
+            {
+                // 手动测试时允许启动后直接展开晾衣绳。
                 line.Toggle();
             }
         }
@@ -68,44 +89,43 @@ public sealed class App : Application
     }
     private void CreateTray()
     {
-        if (tray == null)
+        if (tray != null) return;
+        using var resource = GetResourceStream(new Uri("pack://application:,,,/Assets/snapline.ico")).Stream;
+        tray = new Forms.NotifyIcon { Icon = new System.Drawing.Icon(resource), Visible = true, Text = "SnapLine" };
+        tray.DoubleClick += (_, _) => { trayPanel?.Close(); line?.Toggle(); };
+        tray.MouseUp += (_, e) =>
         {
-            using var resource = GetResourceStream(new Uri("pack://application:,,,/Assets/snapline.ico")).Stream;
-            tray = new Forms.NotifyIcon { Icon = new System.Drawing.Icon(resource), Visible = true, Text = "SnapLine" };
-            tray.DoubleClick += (_, _) => line?.Toggle();
-        }
-        var old = tray.ContextMenuStrip;
-        var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add(Words.T("展开 / 收起", "Show / hide"), null, (_, _) => line?.Toggle());
-        var clipboard = new Forms.ToolStripMenuItem(Words.T("收集剪贴板图片", "Collect clipboard images")) { Checked = state.Preferences.ClipboardEnabled, CheckOnClick = true };
-        clipboard.CheckedChanged += (_, _) => { state.Preferences.ClipboardEnabled = clipboard.Checked; library.Save(); };
-        menu.Items.Add(clipboard);
-        menu.Items.Add(Words.T("设置…", "Settings…"), null, (_, _) => ShowSettings());
-        menu.Items.Add(Words.T("打开收件箱", "Open inbox"), null, (_, _) => OpenInbox());
-        menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add(Words.T("退出", "Quit"), null, (_, _) => Shutdown());
-        tray.ContextMenuStrip = menu;
-        old?.Dispose();
+            if (e.Button == Forms.MouseButtons.Right) Dispatcher.BeginInvoke(ShowTrayPanel);
+        };
+    }
+    private void ShowTrayPanel()
+    {
+        if (trayPanel is { IsVisible: true }) { trayPanel.Close(); return; }
+        var panel = new TrayPanelWindow(state.Preferences, () => library.Items.Count, () => textLibrary.Items.Count, () => System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Take(library.Items, 2)), () => line?.IsRevealed == true,
+            () => line?.Toggle(), OpenInbox, () => Shutdown(),
+            (mode, modifiers, key) => collectors!.RegisterShortcut(mode, modifiers, key), ApplyTraySettingsAsync,
+            mode => line?.SetDisplayMode(mode), () => line?.CreateText());
+        trayPanel = panel;
+        panel.Closed += (_, _) => { if (ReferenceEquals(trayPanel, panel)) trayPanel = null; };
+        var cursor = Forms.Cursor.Position;
+        panel.PrepareNear(cursor);
+        panel.Show();
+        panel.PlaceNear(cursor);
+        panel.Activate();
+        Dispatcher.BeginInvoke(() => { if (panel.IsVisible) panel.Activate(); }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+    private async Task ApplyTraySettingsAsync(bool refreshLine, bool rewatch)
+    {
+        Words.Language = state.Preferences.Language;
+        library.Save();
+        textLibrary.SetCapacity(state.Preferences.TextCapacity);
+        if (rewatch) collectors!.Rewatch();
+        if (refreshLine) await line!.RefreshSettingsAsync();
     }
     private void OpenInbox()
     {
         try { Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { Storage.Inbox }, UseShellExecute = true }); }
         catch (Exception ex) { Notify(ex.Message); }
-    }
-    private void ShowSettings()
-    {
-        if (settings != null) { settings.Activate(); return; }
-        settings = new SettingsWindow(state.Preferences, (modifiers, key) => collectors!.RegisterShortcut(modifiers, key));
-        settings.Saved += async () =>
-        {
-            Words.Language = state.Preferences.Language;
-            library.Save();
-            collectors!.Rewatch();
-            CreateTray();
-            await line!.RefreshSettingsAsync();
-        };
-        settings.Closed += (_, _) => settings = null;
-        settings.Show();
     }
     private void Notify(string text)
     {
@@ -117,6 +137,7 @@ public sealed class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
+        trayPanel?.Close();
         line?.Stop();
         collectors?.Dispose();
         if (tray != null) { tray.Visible = false; tray.Icon?.Dispose(); tray.Dispose(); }

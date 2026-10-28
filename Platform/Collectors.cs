@@ -15,6 +15,7 @@ namespace SnapLine;
 internal sealed class Collectors : IDisposable
 {
     private readonly CaptureLibrary library;
+    private readonly TextLibrary textLibrary;
     private readonly Preferences preferences;
     private readonly Dispatcher dispatcher;
     private readonly HwndSource source;
@@ -23,12 +24,16 @@ internal sealed class Collectors : IDisposable
     private readonly HashSet<string> extensions = new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff" };
     private bool disposed;
     private uint clipboardGeneration;
+    private readonly Dictionary<bool, int> shortcutIds = new();
+    private int nextShortcutId = 10;
     public event Action? ToggleRequested;
+    public event Action? ModeToggleRequested;
     public event Action<string>? Error;
     public bool ClipboardAvailable { get; }
-    public Collectors(CaptureLibrary library, Preferences preferences)
+    public Collectors(CaptureLibrary library, TextLibrary textLibrary, Preferences preferences)
     {
         this.library = library;
+        this.textLibrary = textLibrary;
         this.preferences = preferences;
         dispatcher = Dispatcher.CurrentDispatcher;
         source = new HwndSource(new HwndSourceParameters("SnapLine.Events") { ParentWindow = new IntPtr(-3), Width = 0, Height = 0, WindowStyle = 0 });
@@ -36,18 +41,24 @@ internal sealed class Collectors : IDisposable
         ClipboardAvailable = Native.AddClipboardFormatListener(source.Handle);
         clipboardGeneration = Native.GetClipboardSequenceNumber();
     }
-    public bool RegisterShortcut(uint modifiers, uint key)
+    public bool RegisterShortcut(bool mode, uint modifiers, uint key)
     {
-        // 先用临时编号尝试新组合，注册成功后才撤销旧组合。
-        if (!Native.RegisterHotKey(source.Handle, 2, modifiers | 0x4000, key)) return false;
-        Native.UnregisterHotKey(source.Handle, 1);
-        Native.UnregisterHotKey(source.Handle, 2);
-        return Native.RegisterHotKey(source.Handle, 1, modifiers | 0x4000, key);
+        // 先注册新组合，再撤销旧组合，避免注册失败时丢失原快捷键。
+        var id = nextShortcutId++;
+        if (!Native.RegisterHotKey(source.Handle, id, modifiers | 0x4000, key)) return false;
+        if (shortcutIds.TryGetValue(mode, out var oldId)) Native.UnregisterHotKey(source.Handle, oldId);
+        shortcutIds[mode] = id;
+        return true;
     }
     private IntPtr Hook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (message == 0x0312) { ToggleRequested?.Invoke(); handled = true; }
-        if (message == 0x031D && preferences.ClipboardEnabled)
+        if (message == 0x0312)
+        {
+            var id = wParam.ToInt32();
+            if (shortcutIds.TryGetValue(false, out var toggleId) && id == toggleId) { ToggleRequested?.Invoke(); handled = true; }
+            else if (shortcutIds.TryGetValue(true, out var modeId) && id == modeId) { ModeToggleRequested?.Invoke(); handled = true; }
+        }
+        if (message == 0x031D && (preferences.ClipboardEnabled || preferences.TextClipboardEnabled))
         {
             clipboardGeneration = Native.GetClipboardSequenceNumber();
             _ = ReadClipboardAsync(clipboardGeneration);
@@ -56,15 +67,26 @@ internal sealed class Collectors : IDisposable
     }
     private async Task ReadClipboardAsync(uint generation)
     {
+        System.Drawing.Point? animationOrigin = Native.GetCursorPos(out var cursor) ? new System.Drawing.Point(cursor.X, cursor.Y) : null;
         for (var attempt = 0; attempt < 6 && !disposed; attempt++)
         {
-            if (generation != Native.GetClipboardSequenceNumber() || !preferences.ClipboardEnabled) return;
+            if (generation != Native.GetClipboardSequenceNumber() || (!preferences.ClipboardEnabled && !preferences.TextClipboardEnabled)) return;
             try
             {
                 var data = Clipboard.GetDataObject();
                 if (data == null) return;
-                var rejected = new[] { DataFormats.UnicodeText, DataFormats.Text, DataFormats.FileDrop, "SnapLine.Copy", "ExcludeClipboardContentFromMonitorProcessing", "Clipboard Viewer Ignore", "org.nspasteboard.ConcealedType" };
+                var rejected = new[] { DataFormats.FileDrop, "SnapLine.Copy", "ExcludeClipboardContentFromMonitorProcessing", "Clipboard Viewer Ignore", "org.nspasteboard.ConcealedType" };
                 if (rejected.Any(format => data.GetDataPresent(format, false))) return;
+                if (data.GetDataPresent(DataFormats.UnicodeText, false) || data.GetDataPresent(DataFormats.Text, false))
+                {
+                    if (preferences.TextClipboardEnabled)
+                    {
+                        var text = data.GetData(DataFormats.UnicodeText, false) as string ?? data.GetData(DataFormats.Text, false) as string;
+                        if (!string.IsNullOrWhiteSpace(text) && generation == Native.GetClipboardSequenceNumber() && preferences.TextClipboardEnabled) textLibrary.Import(text);
+                    }
+                    return;
+                }
+                if (!preferences.ClipboardEnabled) return;
                 BitmapSource? image = null;
                 if (data.GetDataPresent("PNG", false) && data.GetData("PNG") is Stream png)
                 {
@@ -75,11 +97,11 @@ internal sealed class Collectors : IDisposable
                 if (image == null || (long)image.PixelWidth * image.PixelHeight > 80_000_000) return;
                 image.Freeze();
                 if (generation != Native.GetClipboardSequenceNumber()) return;
-                await library.ImportClipboardAsync(image);
+                await library.ImportClipboardAsync(image, animationOrigin);
                 return;
             }
             catch (System.Runtime.InteropServices.COMException) { await Task.Delay(80 * (attempt + 1)); }
-            catch (Exception ex) { Error?.Invoke(Words.T("无法读取剪贴板图片：", "Cannot read clipboard image: ") + ex.Message); return; }
+            catch (Exception ex) { Error?.Invoke(Words.T("无法读取剪贴板内容：", "Cannot read clipboard content: ") + ex.Message); return; }
         }
         if (!disposed) Error?.Invoke(Words.T("剪贴板正被占用，本次图片未收集。", "Clipboard is busy; this image was not collected."));
     }
@@ -109,7 +131,12 @@ internal sealed class Collectors : IDisposable
                 }
                 var watcher = new FileSystemWatcher(actual) { IncludeSubdirectories = recursive, NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.DirectoryName };
                 var target = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                void Queue(string path) { if (Path.GetFullPath(path).StartsWith(target, StringComparison.OrdinalIgnoreCase)) dispatcher.BeginInvoke(() => Schedule(path)); }
+                void Queue(string path)
+                {
+                    if (!Path.GetFullPath(path).StartsWith(target, StringComparison.OrdinalIgnoreCase)) return;
+                    System.Drawing.Point? origin = Native.GetCursorPos(out var cursor) ? new System.Drawing.Point(cursor.X, cursor.Y) : null;
+                    dispatcher.BeginInvoke(() => Schedule(path, origin));
+                }
                 watcher.Created += (_, e) => Queue(e.FullPath);
                 watcher.Changed += (_, e) => Queue(e.FullPath);
                 watcher.Renamed += (_, e) => Queue(e.FullPath);
@@ -118,22 +145,22 @@ internal sealed class Collectors : IDisposable
                     if (pending.Remove(e.FullPath, out var removed)) { removed.Cancel(); removed.Dispose(); }
                     library.Prune();
                 });
-                watcher.Error += (_, _) => dispatcher.BeginInvoke(() => Error?.Invoke(Words.T("目录监控中断，请在设置中重新保存目录。", "Folder monitoring stopped. Save folders again in Settings.")));
+                watcher.Error += (_, _) => dispatcher.BeginInvoke(() => Error?.Invoke(Words.T("目录监控中断，请在托盘面板中重新选择目录。", "Folder monitoring stopped. Select the folder again in the tray panel.")));
                 watcher.EnableRaisingEvents = true;
                 watchers.Add(watcher);
             }
             catch (Exception ex) { Error?.Invoke(Words.T("无法监控目录：", "Cannot watch folder: ") + folder + "\n" + ex.Message); }
         }
     }
-    private void Schedule(string path)
+    private void Schedule(string path, System.Drawing.Point? animationOrigin)
     {
         if (disposed || !extensions.Contains(Path.GetExtension(path))) return;
         if (pending.Remove(path, out var previous)) { previous.Cancel(); previous.Dispose(); }
         var cancellation = new CancellationTokenSource();
         pending[path] = cancellation;
-        _ = WaitForFileAsync(path, cancellation);
+        _ = WaitForFileAsync(path, cancellation, animationOrigin);
     }
-    private async Task WaitForFileAsync(string path, CancellationTokenSource cancellation)
+    private async Task WaitForFileAsync(string path, CancellationTokenSource cancellation, System.Drawing.Point? animationOrigin)
     {
         var token = cancellation.Token;
         try
@@ -145,7 +172,7 @@ internal sealed class Collectors : IDisposable
                 {
                     using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read)) { }
                     // 自有文件写入完成后也会被观察到，由内容指纹消除重复。
-                    if (await library.ImportAsync(path, attempt == 9)) return;
+                    if (await library.ImportAsync(path, attempt == 9, animationOrigin)) return;
                 }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
@@ -164,7 +191,7 @@ internal sealed class Collectors : IDisposable
         foreach (var watcher in watchers) watcher.Dispose();
         foreach (var cancellation in pending.Values) cancellation.Cancel();
         Native.RemoveClipboardFormatListener(source.Handle);
-        Native.UnregisterHotKey(source.Handle, 1);
+        foreach (var id in shortcutIds.Values) Native.UnregisterHotKey(source.Handle, id);
         source.Dispose();
     }
 }
