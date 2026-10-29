@@ -55,7 +55,7 @@ internal static class UpdateService
         return new UpdateRelease(tag, root.GetProperty("body").GetString() ?? "", package, checksum);
     }
 
-    internal static async Task DownloadAndInstallAsync(UpdateRelease release)
+    internal static async Task DownloadAndInstallAsync(UpdateRelease release, IProgress<string>? progress = null)
     {
         var temp = Path.Combine(Path.GetTempPath(), "SnapLine-update-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
@@ -65,13 +65,15 @@ internal static class UpdateService
             await using (var output = File.Create(archive))
             await using (var input = await Client.GetStreamAsync(release.PackageUrl))
                 await input.CopyToAsync(output);
+            progress?.Report(Words.T("正在校验更新…", "Verifying the update…"));
             var checksum = (await Client.GetStringAsync(release.ChecksumUrl)).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
             await using var file = File.OpenRead(archive);
             var actual = Convert.ToHexString(await SHA256.HashDataAsync(file));
             if (checksum == null || !actual.Equals(checksum, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException(Words.T("安装包校验失败。", "Package checksum verification failed."));
             await file.DisposeAsync();
             var staged = Path.Combine(temp, "package");
-            ZipFile.ExtractToDirectory(archive, staged);
+            progress?.Report(Words.T("正在解压更新…", "Extracting the update…"));
+            await Task.Run(() => ZipFile.ExtractToDirectory(archive, staged));
             if (!File.Exists(Path.Combine(staged, "SnapLine.exe")) || Directory.Exists(Path.Combine(staged, "Data"))) throw new InvalidDataException(Words.T("安装包内容无效。", "Invalid package contents."));
             var script = Path.Combine(temp, "install.ps1");
             await File.WriteAllTextAsync(script, InstallerScript, new UTF8Encoding(true));
@@ -86,38 +88,49 @@ internal static class UpdateService
 param([string]$Source, [string]$Target, [string]$ExecutableName, [int]$ParentId, [string]$Temp)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework
+$backup = Join-Path $Temp 'backup'
+$copied = New-Object System.Collections.Generic.List[string]
+$cleanup = $false
 try {
     Wait-Process -Id $ParentId -ErrorAction SilentlyContinue
-    $backup = Join-Path $Temp 'backup'
     New-Item -ItemType Directory -Path $backup | Out-Null
-    $copied = New-Object System.Collections.Generic.List[string]
-    try {
-        Get-ChildItem -LiteralPath $Source -File -Recurse | ForEach-Object {
-            $relative = $_.FullName.Substring($Source.Length).TrimStart('\')
-            if ($relative -eq 'SnapLine.exe') { $relative = $ExecutableName }
-            $destination = Join-Path $Target $relative
-            $saved = Join-Path $backup $relative
-            if (Test-Path -LiteralPath $destination) {
-                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $saved) | Out-Null
-                Copy-Item -LiteralPath $destination -Destination $saved -Force
-            }
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
-            $copied.Add($relative)
-            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+    Get-ChildItem -LiteralPath $Source -File -Recurse | ForEach-Object {
+        $relative = $_.FullName.Substring($Source.Length).TrimStart('\')
+        if ($relative -eq 'SnapLine.exe') { $relative = $ExecutableName }
+        $destination = Join-Path $Target $relative
+        $saved = Join-Path $backup $relative
+        if (Test-Path -LiteralPath $destination) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $saved) | Out-Null
+            Copy-Item -LiteralPath $destination -Destination $saved -Force
         }
-    } catch {
-        foreach ($relative in $copied) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        $copied.Add($relative)
+        Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+    }
+    Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target -ErrorAction Stop
+    $cleanup = $true
+} catch {
+    $reason = $_.Exception.Message
+    $rollbackFailed = $false
+    foreach ($relative in $copied) {
+        try {
             $destination = Join-Path $Target $relative
             $saved = Join-Path $backup $relative
             if (Test-Path -LiteralPath $saved) { Copy-Item -LiteralPath $saved -Destination $destination -Force }
-            else { Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue }
-        }
-        throw
+            elseif (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
+        } catch { $rollbackFailed = $true }
     }
-    Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target
-} catch {
-    [System.Windows.MessageBox]::Show("更新失败，请检查程序目录的写入权限后重试。`n$($_.Exception.Message)", 'SnapLine') | Out-Null
-    if (Test-Path -LiteralPath (Join-Path $Target $ExecutableName)) { Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target }
-} finally { Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($rollbackFailed) {
+        [System.Windows.MessageBox]::Show("更新失败，旧文件未能完全恢复。备份保存在：`n$backup`n`n$reason", 'SnapLine') | Out-Null
+    } else {
+        [System.Windows.MessageBox]::Show("更新失败，已恢复原文件：`n$reason", 'SnapLine') | Out-Null
+        try {
+            if (Test-Path -LiteralPath (Join-Path $Target $ExecutableName)) { Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target -ErrorAction Stop }
+            $cleanup = $true
+        } catch {
+            [System.Windows.MessageBox]::Show("无法启动原程序，备份保存在：`n$backup`n`n$($_.Exception.Message)", 'SnapLine') | Out-Null
+        }
+    }
+} finally { if ($cleanup) { Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue } }
 """;
 }

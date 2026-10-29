@@ -12,7 +12,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw '版本号必须采用主版�
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $publish = Join-Path ([IO.Path]::GetTempPath()) ('SnapLine-build-' + [guid]::NewGuid().ToString('N'))
 try {
-    dotnet publish $project -c Release -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version=$Version -o $publish --nologo
+    dotnet publish $project -c Release -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:Version=$Version -o $publish --nologo
     if ($LASTEXITCODE -ne 0) { throw '发布构建失败。' }
     $exe = Join-Path $output "SnapLine-$Version-$Runtime.exe"
     Copy-Item (Join-Path $publish 'SnapLine.exe') $exe -Force

@@ -159,7 +159,12 @@ public sealed class App : Application
         trayPanel?.RefreshUpdate();
         try
         {
-            await UpdateService.DownloadAndInstallAsync(release);
+            var progress = new Progress<string>(text =>
+            {
+                updateStatus.Text = text;
+                trayPanel?.RefreshUpdate();
+            });
+            await UpdateService.DownloadAndInstallAsync(release, progress);
             Shutdown();
         }
         catch (Exception ex)

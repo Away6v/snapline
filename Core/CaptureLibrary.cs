@@ -16,6 +16,8 @@ public sealed class CaptureLibrary
     private readonly State state;
     private readonly SemaphoreSlim gate = new(1);
     private int automaticCapacity = 100;
+    private DateTime nextRetry = DateTime.MinValue;
+    private bool retrying;
     public event Action? Changed;
     public event Action<string>? Error;
     public IReadOnlyList<Capture> Items => state.Captures;
@@ -29,6 +31,7 @@ public sealed class CaptureLibrary
     }
     public async Task RestoreAsync()
     {
+        var unavailable = 0;
         foreach (var item in state.Captures.ToArray())
         {
             try
@@ -44,8 +47,9 @@ public sealed class CaptureLibrary
                     catch { }
                 }
             }
-            catch { state.Captures.Remove(item); }
+            catch { item.Thumbnail = null; unavailable++; }
         }
+        if (unavailable > 0) Error?.Invoke(Words.T($"{unavailable} 张图片暂时无法读取，记录已保留并会自动重试。", $"{unavailable} images are unavailable. Their records are kept and will be retried."));
         Save();
         Changed?.Invoke();
     }
@@ -59,7 +63,7 @@ public sealed class CaptureLibrary
             var samePath = state.Captures.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
             if (samePath != null)
             {
-                if (samePath.Hash == image.Hash) return true;
+                if (samePath.Hash == image.Hash && samePath.Thumbnail != null) return true;
                 samePath.Hash = image.Hash;
                 samePath.Thumbnail = image.Thumb;
                 samePath.PixelWidth = image.Full.PixelWidth;
@@ -125,7 +129,7 @@ public sealed class CaptureLibrary
         while (state.Captures.Count > Capacity)
         {
             var first = state.Captures[0];
-            if (!await RemoveFileAsync(first)) break;
+            if (first.Thumbnail == null || !await RemoveFileAsync(first)) break;
             state.Captures.Remove(first);
         }
     }
@@ -154,10 +158,19 @@ public sealed class CaptureLibrary
     }
     public void Prune()
     {
-        if (gate.CurrentCount == 0) return;
-        if (state.Captures.RemoveAll(x => !File.Exists(x.Path)) == 0) return;
-        Save();
-        Changed?.Invoke();
+        if (retrying || DateTime.UtcNow < nextRetry || !state.Captures.Any(item => item.Thumbnail == null)) return;
+        nextRetry = DateTime.UtcNow.AddSeconds(30);
+        _ = RetryUnavailableAsync();
+    }
+    private async Task RetryUnavailableAsync()
+    {
+        retrying = true;
+        try
+        {
+            foreach (var item in state.Captures.Where(item => item.Thumbnail == null).ToArray())
+                await ImportAsync(item.Path, false);
+        }
+        finally { retrying = false; }
     }
     public async Task<string?> EditablePathAsync(Capture item)
     {
@@ -243,7 +256,12 @@ public sealed class CaptureLibrary
         var (full, alphaRepaired) = LoadFullWithInfo(path);
         var hash = Fingerprint(full);
         var scale = Math.Min(1, 420.0 / Math.Max(full.PixelWidth, full.PixelHeight));
-        var thumb = new TransformedBitmap(full, new ScaleTransform(scale, scale));
+        var scaled = new TransformedBitmap(full, new ScaleTransform(scale, scale));
+        var stride = checked(scaled.PixelWidth * 4);
+        var pixels = new byte[checked(stride * scaled.PixelHeight)];
+        scaled.CopyPixels(pixels, stride, 0);
+        // 缩略图拥有独立像素，避免长期持有完整原图。
+        var thumb = BitmapSource.Create(scaled.PixelWidth, scaled.PixelHeight, scaled.DpiX, scaled.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         thumb.Freeze();
         return (thumb, hash, full, alphaRepaired);
     }
@@ -251,12 +269,19 @@ public sealed class CaptureLibrary
     {
         if (source.PixelWidth <= 0 || source.PixelHeight <= 0 || (long)source.PixelWidth * source.PixelHeight > 80_000_000) throw new IOException("Image dimensions exceed limit.");
         var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
-        var pixels = new byte[checked(source.PixelWidth * source.PixelHeight * 4)];
-        converted.CopyPixels(pixels, source.PixelWidth * 4, 0);
+        var stride = checked(source.PixelWidth * 4);
+        var rows = Math.Min(source.PixelHeight, Math.Max(1, 1024 * 1024 / stride));
+        var pixels = new byte[checked(stride * rows)];
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(BitConverter.GetBytes(source.PixelWidth));
         hash.AppendData(BitConverter.GetBytes(source.PixelHeight));
-        hash.AppendData(pixels);
+        // 按行分块计算，保持原有指纹格式并降低大图临时内存。
+        for (var y = 0; y < source.PixelHeight; y += rows)
+        {
+            var count = Math.Min(rows, source.PixelHeight - y);
+            converted.CopyPixels(new System.Windows.Int32Rect(0, y, source.PixelWidth, count), pixels, stride, 0);
+            hash.AppendData(pixels, 0, checked(stride * count));
+        }
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 }

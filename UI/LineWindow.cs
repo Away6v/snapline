@@ -792,7 +792,9 @@ internal sealed class LineWindow : Window
         var interior = new Grid();
         interior.RowDefinitions.Add(new RowDefinition { Height = new GridLength(imageHeight) });
         var image = new Image { Source = capture.Thumbnail, Stretch = Stretch.Uniform, SnapsToDevicePixels = true, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
-        var preview = new Border { Background = Brushes.Transparent, ClipToBounds = true, Child = image };
+        var preview = new Border { Background = Brushes.Transparent, ClipToBounds = true, Child = capture.Thumbnail == null
+            ? new TextBlock { Text = Words.T("图片暂不可用", "Image unavailable"), Foreground = AppTheme.Muted, FontSize = 10, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+            : image };
         interior.Children.Add(preview);
         Grid.SetRow(preview, 0);
         var remove = CreateRemoveButton();
