@@ -28,6 +28,7 @@ jobs:
         with:
           name: SnapLine-${{ matrix.runtime }}
           path: |
+            outputs/*.exe
             outputs/*.zip
             outputs/*.sha256
           if-no-files-found: error

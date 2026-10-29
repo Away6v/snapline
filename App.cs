@@ -20,6 +20,7 @@ public sealed class App : Application
     private CaptureLibrary library = null!;
     private TextLibrary textLibrary = null!;
     private DateTime lastNotice;
+    private readonly UpdateStatus updateStatus = new();
     [STAThread]
     public static void Main()
     {
@@ -104,7 +105,7 @@ public sealed class App : Application
         var panel = new TrayPanelWindow(state.Preferences, () => library.Items.Count, () => textLibrary.Items.Count, () => System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Take(library.Items, 2)), () => line?.IsRevealed == true,
             () => line?.Toggle(), OpenInbox, () => Shutdown(),
             (mode, modifiers, key) => collectors!.RegisterShortcut(mode, modifiers, key), ApplyTraySettingsAsync,
-            mode => line?.SetDisplayMode(mode), () => line?.CreateText(), () => _ = CheckUpdatesAsync());
+            mode => line?.SetDisplayMode(mode), () => line?.CreateText(), updateStatus, () => _ = CheckUpdatesAsync(), () => _ = InstallUpdateAsync());
         trayPanel = panel;
         panel.Closed += (_, _) => { if (ReferenceEquals(trayPanel, panel)) trayPanel = null; };
         var cursor = Forms.Cursor.Position;
@@ -122,41 +123,52 @@ public sealed class App : Application
         if (rewatch) collectors!.Rewatch();
         if (refreshLine) await line!.RefreshSettingsAsync();
     }
-    private bool checkingUpdates;
     private async Task CheckUpdatesAsync()
     {
-        if (checkingUpdates) return;
-        checkingUpdates = true;
+        if (updateStatus.Busy) return;
+        updateStatus.Busy = true;
+        updateStatus.Release = null;
+        updateStatus.Error = false;
+        updateStatus.Text = Words.T("正在检查更新…", "Checking for updates…");
+        trayPanel?.RefreshUpdate();
         try
         {
-            var release = await UpdateService.CheckAsync();
-            if (release == null)
-            {
-                MessageBox.Show(Words.T("当前已是最新版本。", "You are using the latest version."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-            var dialog = new UpdateWindow(release);
-            if (dialog.ShowDialog() != true) return;
-            var progress = new Window
-            {
-                Title = "SnapLine", Width = 320, Height = 110, ResizeMode = ResizeMode.NoResize,
-                WindowStartupLocation = WindowStartupLocation.CenterScreen, Topmost = true,
-                Content = new System.Windows.Controls.TextBlock
-                {
-                    Text = Words.T("正在下载并校验更新，请稍候…", "Downloading and verifying the update…"),
-                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
-                }
-            };
-            progress.Show();
-            try { await UpdateService.DownloadAndInstallAsync(release); }
-            finally { progress.Close(); }
+            updateStatus.Release = await UpdateService.CheckAsync();
+            updateStatus.Text = updateStatus.Release == null
+                ? Words.T("当前已是最新版本。", "You are using the latest version.")
+                : Words.T("发现新版本 ", "New version ") + updateStatus.Release.Version;
+        }
+        catch (Exception ex)
+        {
+            updateStatus.Error = true;
+            updateStatus.Text = Words.T("检查更新失败：", "Update check failed: ") + ex.Message;
+        }
+        finally
+        {
+            updateStatus.Busy = false;
+            trayPanel?.RefreshUpdate();
+        }
+    }
+    private async Task InstallUpdateAsync()
+    {
+        var release = updateStatus.Release;
+        if (updateStatus.Busy || release == null) return;
+        updateStatus.Busy = true;
+        updateStatus.Error = false;
+        updateStatus.Text = Words.T("正在下载并校验更新，请稍候…", "Downloading and verifying the update…");
+        trayPanel?.RefreshUpdate();
+        try
+        {
+            await UpdateService.DownloadAndInstallAsync(release);
             Shutdown();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(Words.T("更新失败：\n", "Update failed:\n") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Error);
+            updateStatus.Error = true;
+            updateStatus.Text = Words.T("更新失败：", "Update failed: ") + ex.Message;
+            updateStatus.Busy = false;
+            trayPanel?.RefreshUpdate();
         }
-        finally { checkingUpdates = false; }
     }
     private void OpenInbox()
     {
@@ -181,4 +193,12 @@ public sealed class App : Application
         instance?.Dispose();
         base.OnExit(e);
     }
+}
+
+internal sealed class UpdateStatus
+{
+    internal bool Busy;
+    internal bool Error;
+    internal string? Text;
+    internal UpdateRelease? Release;
 }

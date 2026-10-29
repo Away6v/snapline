@@ -76,14 +76,14 @@ internal static class UpdateService
             var script = Path.Combine(temp, "install.ps1");
             await File.WriteAllTextAsync(script, InstallerScript, new UTF8Encoding(true));
             var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
-            foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Source", staged, "-Target", AppContext.BaseDirectory, "-ParentId", Environment.ProcessId.ToString(), "-Temp", temp }) start.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Source", staged, "-Target", AppContext.BaseDirectory, "-ExecutableName", Path.GetFileName(Environment.ProcessPath ?? throw new InvalidOperationException(Words.T("无法确定程序路径。", "Could not determine the executable path."))), "-ParentId", Environment.ProcessId.ToString(), "-Temp", temp }) start.ArgumentList.Add(arg);
             _ = Process.Start(start) ?? throw new InvalidOperationException(Words.T("无法启动更新程序。", "Could not start the updater."));
         }
         catch { try { Directory.Delete(temp, true); } catch { } throw; }
     }
 
     private const string InstallerScript = """
-param([string]$Source, [string]$Target, [int]$ParentId, [string]$Temp)
+param([string]$Source, [string]$Target, [string]$ExecutableName, [int]$ParentId, [string]$Temp)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework
 try {
@@ -94,6 +94,7 @@ try {
     try {
         Get-ChildItem -LiteralPath $Source -File -Recurse | ForEach-Object {
             $relative = $_.FullName.Substring($Source.Length).TrimStart('\')
+            if ($relative -eq 'SnapLine.exe') { $relative = $ExecutableName }
             $destination = Join-Path $Target $relative
             $saved = Join-Path $backup $relative
             if (Test-Path -LiteralPath $destination) {
@@ -113,10 +114,10 @@ try {
         }
         throw
     }
-    Start-Process -FilePath (Join-Path $Target 'SnapLine.exe') -WorkingDirectory $Target
+    Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target
 } catch {
     [System.Windows.MessageBox]::Show("更新失败，请检查程序目录的写入权限后重试。`n$($_.Exception.Message)", 'SnapLine') | Out-Null
-    if (Test-Path -LiteralPath (Join-Path $Target 'SnapLine.exe')) { Start-Process -FilePath (Join-Path $Target 'SnapLine.exe') -WorkingDirectory $Target }
+    if (Test-Path -LiteralPath (Join-Path $Target $ExecutableName)) { Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target }
 } finally { Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue }
 """;
 }

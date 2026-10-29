@@ -49,11 +49,15 @@ internal sealed class TrayPanelWindow : Window
     private readonly Action<string> setDisplayMode;
     private readonly Action createText;
     private readonly Action checkUpdates;
+    private readonly Action installUpdate;
+    private readonly UpdateStatus updateStatus;
     private readonly ScrollViewer scroll;
     private readonly ContentControl header = new();
     private readonly ContentControl footer = new();
     private readonly SmoothScroll smoothScroll;
     private ComboBox? openCapacityChoice;
+    private Button? updateButton;
+    private Border? updateDetails;
     private Page currentPage;
     private bool folderDialogOpen;
     private bool wasActivated;
@@ -66,7 +70,7 @@ internal sealed class TrayPanelWindow : Window
 
     internal TrayPanelWindow(Preferences preferences, Func<int> captureCount, Func<int> textCount, Func<Capture[]> previewCaptures, Func<bool> lineVisible,
         Action toggleLine, Action openInbox, Action exit, Func<bool, uint, uint, bool> registerShortcut,
-        Func<bool, bool, Task> savePreferences, Action<string> setDisplayMode, Action createText, Action checkUpdates)
+        Func<bool, bool, Task> savePreferences, Action<string> setDisplayMode, Action createText, UpdateStatus updateStatus, Action checkUpdates, Action installUpdate)
     {
         this.preferences = preferences;
         settingsMode = preferences.DisplayMode;
@@ -82,6 +86,8 @@ internal sealed class TrayPanelWindow : Window
         this.setDisplayMode = setDisplayMode;
         this.createText = createText;
         this.checkUpdates = checkUpdates;
+        this.installUpdate = installUpdate;
+        this.updateStatus = updateStatus;
         Title = "SnapLine";
         Width = 360;
         Height = 520;
@@ -205,6 +211,13 @@ internal sealed class TrayPanelWindow : Window
     {
         settingsMode = preferences.DisplayMode;
         if (currentPage == Page.Home && IsVisible) Navigate(Page.Home);
+    }
+
+    internal void RefreshUpdate()
+    {
+        if (currentPage != Page.Home || !IsVisible) return;
+        UpdateUpdateSection();
+        FitHeight();
     }
 
     private void FitHeight()
@@ -422,16 +435,47 @@ internal sealed class TrayPanelWindow : Window
         panel.Children.Add(NavigationRow(Words.T("外观", "Appearance"), AppearanceText(), Page.Appearance));
         panel.Children.Add(NavigationRow(Words.T("界面语言", "Language"), preferences.Language == "zh" ? "简体中文" : "English", Page.Language));
         panel.Children.Add(NavigationRow(Words.T("快捷键设置", "Keyboard shortcuts"), "", Page.Shortcut));
-        var update = Button(Words.T("检查更新", "Check for updates"), RowStyle, 38);
-        update.HorizontalContentAlignment = HorizontalAlignment.Left;
-        update.Click += (_, _) => { Close(); checkUpdates(); };
-        panel.Children.Add(update);
+        updateButton = Button(Words.T("检查更新", "Check for updates"), RowStyle, 38);
+        updateButton.HorizontalContentAlignment = HorizontalAlignment.Left;
+        updateButton.Click += (_, _) => checkUpdates();
+        panel.Children.Add(updateButton);
+        updateDetails = new Border { Background = Soft, CornerRadius = new CornerRadius(9), Padding = new Thickness(10), Margin = new Thickness(0, 2, 0, 5) };
+        panel.Children.Add(updateDetails);
+        UpdateUpdateSection();
         if (!string.IsNullOrWhiteSpace(message))
         {
             panel.Children.Add(Label(message, 10, Alert));
             panel.Children.Add(Gap(5));
         }
         return panel;
+    }
+
+    private void UpdateUpdateSection()
+    {
+        if (updateButton == null || updateDetails == null) return;
+        updateButton.IsEnabled = !updateStatus.Busy;
+        updateButton.Opacity = updateStatus.Busy ? 0.55 : 1;
+        updateDetails.Visibility = string.IsNullOrWhiteSpace(updateStatus.Text) ? Visibility.Collapsed : Visibility.Visible;
+        if (updateDetails.Visibility == Visibility.Collapsed)
+        {
+            updateDetails.Child = null;
+            return;
+        }
+        var details = new StackPanel();
+        details.Children.Add(Label(updateStatus.Text!, 11, updateStatus.Error ? Alert : Accent, FontWeights.Medium));
+        if (updateStatus.Release != null && !updateStatus.Busy)
+        {
+            var notes = new ScrollViewer { MaxHeight = 120, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 8, 0, 0) };
+            notes.Content = Label(string.IsNullOrWhiteSpace(updateStatus.Release.Notes)
+                ? Words.T("此版本没有提供更新说明。", "No release notes were provided.")
+                : updateStatus.Release.Notes, 11, Ink);
+            details.Children.Add(notes);
+            var install = Button(Words.T("下载并更新", "Download and update"), PrimaryStyle, 34);
+            install.Margin = new Thickness(0, 10, 0, 0);
+            install.Click += (_, _) => installUpdate();
+            details.Children.Add(install);
+        }
+        updateDetails.Child = details;
     }
 
     private StackPanel Folders()

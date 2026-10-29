@@ -12,10 +12,10 @@
 
 前往 [Releases](https://github.com/Away6v/snapline/releases) 下载：
 
-- 普通 Intel / AMD 电脑：`SnapLine-0.1.0-win-x64.zip`。
-- Windows on ARM 电脑：`SnapLine-0.1.0-win-arm64.zip`。
+- 普通 Intel / AMD 电脑：`SnapLine-0.1.0-win-x64.exe`。
+- Windows on ARM 电脑：`SnapLine-0.1.0-win-arm64.exe`。
 
-解压整个 ZIP 后运行 `SnapLine.exe`，不要只复制 EXE。便携包包含运行时，无须安装 .NET 或管理员权限。首次启动说明会提示剪贴板图片收集已开启；程序随后驻留系统托盘。
+下载后直接运行 EXE，无须安装 .NET 或管理员权限。程序在 EXE 所在目录的 `Data` 文件夹中保存设置和数据，请将 EXE 放在有写入权限的位置。发布页也提供 ZIP 包供旧版本自动更新使用。首次启动说明会提示剪贴板图片收集已开启；程序随后驻留系统托盘。
 
 兼容目标为 Windows 10 22H2 与 Windows 11。本项目的兼容目标不等同于微软对旧系统的维护承诺。首版为未签名预发布版本，系统可能显示发布者未知；尚未提供代码签名或商店上架。可从托盘面板手动检查更新。
 
@@ -80,4 +80,4 @@ dotnet build -c Release
 
 ### 发布更新
 
-在项目文件中更新 `Version`，提交更改并推送形如 `v1.2.3` 的版本标签。GitHub Actions 会构建 x64 和 ARM64 便携包及 SHA-256 校验文件，并创建带自动生成说明的正式 Release。可在 GitHub 编辑 Release 正文，软件检查更新时会展示该正文。发布前请检查版本号、发布说明和构建结果。软件仅检查最新正式版本；下载、校验后覆盖当前目录并重启，保留 `Data`。
+在项目文件中更新 `Version`，提交更改并推送形如 `v1.2.3` 的版本标签。GitHub Actions 会构建 x64 和 ARM64 单文件 EXE、兼容更新的 ZIP 包及 SHA-256 校验文件，并创建带自动生成说明的正式 Release。可在 GitHub 编辑 Release 正文，软件检查更新时会展示该正文。发布前请检查版本号、发布说明和构建结果。软件仅检查最新正式版本；下载、校验后覆盖当前目录并重启，保留 `Data`。
