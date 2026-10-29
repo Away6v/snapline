@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\snapline.ico</ApplicationIcon>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <AssemblyName>SnapLine</AssemblyName>
     <RootNamespace>SnapLine</RootNamespace>
     <PublishTrimmed>false</PublishTrimmed>
