@@ -8,4 +8,4 @@ SnapLine 是参考 [Tendedero](https://github.com/alejandrobujan/tendedero) 的 
 - SnapLine 图标为本项目原创的代码绘制资产，适用本仓库 MIT 许可。
 - 便携包包含 Microsoft .NET 10 与 Windows Desktop Runtime。其许可及第三方声明随运行时文件一并分发；.NET 源码与许可见 https://github.com/dotnet/runtime 和 https://github.com/dotnet/wpf。
 
-应用没有网络服务、分析 SDK 或自动更新组件。GitHub Actions 与构建工具联网下载构建依赖，不属于应用运行行为。
+应用没有分析 SDK。手动检查更新时，应用会连接 GitHub 获取发布信息和更新包。GitHub Actions 与构建工具联网下载构建依赖，不属于应用运行行为。

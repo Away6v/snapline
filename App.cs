@@ -69,8 +69,8 @@ public sealed class App : Application
             if (!state.Preferences.OnboardingComplete)
             {
                 MessageBox.Show(Words.T(
-                    "欢迎使用截图晾衣绳！\n\n已默认开启剪贴板截图与文本收集，内容仅保存在本机。复制的文件及本应用复制的内容会被忽略。\n\n鼠标停留屏幕顶部，或按 Ctrl+Alt+T 展开。托盘右键面板可切换“文本 / 截图”、新建文本及调整收集设置。\n\n截图卡片可复制、预览、编辑或拖出分享；文本卡片可复制、查看和编辑。\n\n右键托盘图标打开控制面板。程序不联网，不上传内容。",
-                    "Welcome to SnapLine!\n\nClipboard image and text collection are on by default. Content stays on this device. Copied files and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or press Ctrl+Alt+T. Right-click the tray icon to switch between Text and Screenshots, create text, and adjust collection settings.\n\nScreenshot cards can be copied, previewed, edited, or dragged to share. Text cards can be copied, viewed, and edited.\n\nSnapLine does not connect to the internet or upload your content."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "欢迎使用截图晾衣绳！\n\n已默认开启剪贴板截图与文本收集，内容仅保存在本机。复制的文件及本应用复制的内容会被忽略。\n\n鼠标停留屏幕顶部，或按 Ctrl+Alt+T 展开。托盘右键面板可切换“文本 / 截图”、新建文本及调整收集设置。\n\n截图卡片可复制、预览、编辑或拖出分享；文本卡片可复制、查看和编辑。\n\n右键托盘图标打开控制面板。检查更新时会连接 GitHub，内容不会上传。",
+                    "Welcome to SnapLine!\n\nClipboard image and text collection are on by default. Content stays on this device. Copied files and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or press Ctrl+Alt+T. Right-click the tray icon to switch between Text and Screenshots, create text, and adjust collection settings.\n\nScreenshot cards can be copied, previewed, edited, or dragged to share. Text cards can be copied, viewed, and edited.\n\nChecking for updates connects to GitHub. Your content is not uploaded."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
                 state.Preferences.OnboardingComplete = true;
                 library.Save();
                 line.Toggle();
@@ -104,7 +104,7 @@ public sealed class App : Application
         var panel = new TrayPanelWindow(state.Preferences, () => library.Items.Count, () => textLibrary.Items.Count, () => System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Take(library.Items, 2)), () => line?.IsRevealed == true,
             () => line?.Toggle(), OpenInbox, () => Shutdown(),
             (mode, modifiers, key) => collectors!.RegisterShortcut(mode, modifiers, key), ApplyTraySettingsAsync,
-            mode => line?.SetDisplayMode(mode), () => line?.CreateText());
+            mode => line?.SetDisplayMode(mode), () => line?.CreateText(), () => _ = CheckUpdatesAsync());
         trayPanel = panel;
         panel.Closed += (_, _) => { if (ReferenceEquals(trayPanel, panel)) trayPanel = null; };
         var cursor = Forms.Cursor.Position;
@@ -121,6 +121,42 @@ public sealed class App : Application
         textLibrary.SetCapacity(state.Preferences.TextCapacity);
         if (rewatch) collectors!.Rewatch();
         if (refreshLine) await line!.RefreshSettingsAsync();
+    }
+    private bool checkingUpdates;
+    private async Task CheckUpdatesAsync()
+    {
+        if (checkingUpdates) return;
+        checkingUpdates = true;
+        try
+        {
+            var release = await UpdateService.CheckAsync();
+            if (release == null)
+            {
+                MessageBox.Show(Words.T("当前已是最新版本。", "You are using the latest version."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var dialog = new UpdateWindow(release);
+            if (dialog.ShowDialog() != true) return;
+            var progress = new Window
+            {
+                Title = "SnapLine", Width = 320, Height = 110, ResizeMode = ResizeMode.NoResize,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen, Topmost = true,
+                Content = new System.Windows.Controls.TextBlock
+                {
+                    Text = Words.T("正在下载并校验更新，请稍候…", "Downloading and verifying the update…"),
+                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            progress.Show();
+            try { await UpdateService.DownloadAndInstallAsync(release); }
+            finally { progress.Close(); }
+            Shutdown();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(Words.T("更新失败：\n", "Update failed:\n") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { checkingUpdates = false; }
     }
     private void OpenInbox()
     {

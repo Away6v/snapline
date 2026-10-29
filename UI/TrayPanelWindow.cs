@@ -48,6 +48,7 @@ internal sealed class TrayPanelWindow : Window
     private readonly Func<bool, bool, Task> savePreferences;
     private readonly Action<string> setDisplayMode;
     private readonly Action createText;
+    private readonly Action checkUpdates;
     private readonly ScrollViewer scroll;
     private readonly ContentControl header = new();
     private readonly ContentControl footer = new();
@@ -65,7 +66,7 @@ internal sealed class TrayPanelWindow : Window
 
     internal TrayPanelWindow(Preferences preferences, Func<int> captureCount, Func<int> textCount, Func<Capture[]> previewCaptures, Func<bool> lineVisible,
         Action toggleLine, Action openInbox, Action exit, Func<bool, uint, uint, bool> registerShortcut,
-        Func<bool, bool, Task> savePreferences, Action<string> setDisplayMode, Action createText)
+        Func<bool, bool, Task> savePreferences, Action<string> setDisplayMode, Action createText, Action checkUpdates)
     {
         this.preferences = preferences;
         settingsMode = preferences.DisplayMode;
@@ -80,6 +81,7 @@ internal sealed class TrayPanelWindow : Window
         this.savePreferences = savePreferences;
         this.setDisplayMode = setDisplayMode;
         this.createText = createText;
+        this.checkUpdates = checkUpdates;
         Title = "SnapLine";
         Width = 360;
         Height = 520;
@@ -420,6 +422,10 @@ internal sealed class TrayPanelWindow : Window
         panel.Children.Add(NavigationRow(Words.T("外观", "Appearance"), AppearanceText(), Page.Appearance));
         panel.Children.Add(NavigationRow(Words.T("界面语言", "Language"), preferences.Language == "zh" ? "简体中文" : "English", Page.Language));
         panel.Children.Add(NavigationRow(Words.T("快捷键设置", "Keyboard shortcuts"), "", Page.Shortcut));
+        var update = Button(Words.T("检查更新", "Check for updates"), RowStyle, 38);
+        update.HorizontalContentAlignment = HorizontalAlignment.Left;
+        update.Click += (_, _) => { Close(); checkUpdates(); };
+        panel.Children.Add(update);
         if (!string.IsNullOrWhiteSpace(message))
         {
             panel.Children.Add(Label(message, 10, Alert));
