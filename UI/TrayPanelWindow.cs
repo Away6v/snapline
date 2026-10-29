@@ -239,6 +239,7 @@ internal sealed class TrayPanelWindow : Window
         var header = new Grid { Margin = new Thickness(0, 0, 0, 13) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34) });
         header.ColumnDefinitions.Add(new ColumnDefinition());
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(new Image
         {
             Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Assets/snapline.png")),
@@ -251,6 +252,11 @@ internal sealed class TrayPanelWindow : Window
         brand.Children.Add(Label("SnapLine", 17, Ink, FontWeights.Bold));
         Grid.SetColumn(brand, 1);
         header.Children.Add(brand);
+        var version = typeof(TrayPanelWindow).Assembly.GetName().Version;
+        var versionLabel = Label(version == null ? "" : $"v{version.Major}.{version.Minor}.{version.Build}", 11, Muted);
+        versionLabel.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(versionLabel, 2);
+        header.Children.Add(versionLabel);
         return header;
     }
 
