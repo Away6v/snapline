@@ -553,8 +553,9 @@ internal sealed class LineWindow : Window
         Add("编辑", "Edit", "✎", () => OpenText(entry, true));
         menu.Items.Add(WarmCardMenu.Separator());
         Add("从晾衣绳移除", "Remove from line", "×", () => textLibrary.Remove(entry), true);
+        Add("取下全部文本", "Remove all text", "×", textLibrary.RemoveAll, true);
+        ConfigureMenuAutoClose(menu);
         menu.Opened += (_, _) => busy = true;
-        menu.MouseLeave += (_, _) => menu.IsOpen = false;
         menu.Closed += (_, _) => FinishInteraction();
         border.ContextMenu = menu;
         border.MouseLeftButtonDown += (_, e) => { busy = true; if (e.ClickCount == 2) OpenText(entry, false); else { CopyCard(); FinishInteraction(); } e.Handled = true; };
@@ -573,6 +574,21 @@ internal sealed class LineWindow : Window
         container.Loaded += (_, _) => QueueCardPositionUpdate();
         container.Unloaded += (_, _) => { if (ReferenceEquals(copyHintContainer, container)) ClearCopyHint(); };
         return container;
+    }
+    private static void ConfigureMenuAutoClose(ContextMenu menu)
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        var entered = false;
+        menu.Opened += (_, _) => { entered = false; timer.Start(); };
+        menu.Closed += (_, _) => timer.Stop();
+        timer.Tick += (_, _) =>
+        {
+            if (!menu.IsOpen || !Native.GetCursorPos(out var cursor)) return;
+            var local = menu.PointFromScreen(new Point(cursor.X, cursor.Y));
+            var inside = new Rect(menu.RenderSize).Contains(local);
+            if (inside) entered = true;
+            else if (entered) menu.IsOpen = false;
+        };
     }
     private Button CreateRemoveButton()
     {
@@ -818,6 +834,25 @@ internal sealed class LineWindow : Window
         Task CopyCardAsync() => CopyWithFeedbackAsync(container, card, isCurrent => CopyToClipboardAsync(capture, isCurrent));
         var peg = LineAppearance.Peg(preferences.Appearance, clipIndex);
         peg.CacheMode = new BitmapCache();
+        peg.Cursor = Cursors.Hand;
+        peg.ToolTip = Words.T("取下并钉在桌面", "Pin to desktop");
+        peg.MouseLeftButtonDown += async (_, e) =>
+        {
+            e.Handled = true;
+            if (!peg.IsEnabled) return;
+            peg.IsEnabled = false;
+            try
+            {
+                var bitmap = await Task.Run(() => CaptureLibrary.LoadFull(capture.Path));
+                if (!IsCurrentCard(capture.Id, container)) return;
+                var target = screen ?? Forms.Screen.FromPoint(Forms.Cursor.Position);
+                var pinned = new PinnedCaptureWindow(bitmap, target, capture.Path, library, notify);
+                pinned.Show();
+                if (!await library.TakeOffAsync(capture)) pinned.Close();
+            }
+            catch (Exception ex) { notify(Words.T("无法钉住图片：", "Cannot pin image: ") + ex.Message); }
+            finally { peg.IsEnabled = true; }
+        };
         container.Children.Add(peg);
         hitTargets.Add(peg);
         hitTargets.Add(card);
@@ -830,15 +865,16 @@ internal sealed class LineWindow : Window
             menu.Items.Add(entry);
         }
         Add("复制图片", "Copy image", "⧉", () => _ = CopyCardAsync());
-        Add("预览", "Preview", "◉", () => Preview(capture));
-        Add("用默认应用打开", "Open with default app", "↗", () => Open(capture.Path));
+        Add("预览", "Preview", "preview", () => Preview(capture));
+        Add("用默认应用打开", "Open with default app", "open", () => Open(capture.Path));
         Add("用画图编辑副本", "Edit in Paint", "✎", () => _ = EditAsync(capture));
-        Add("另存为…", "Save as…", "↓", () => SaveAs(capture));
-        Add("在文件夹中显示", "Show in folder", "▣", () => RevealFile(capture));
+        Add("另存为…", "Save as…", "save", () => SaveAs(capture));
+        Add("在文件夹中显示", "Show in folder", "folder", () => RevealFile(capture));
         menu.Items.Add(WarmCardMenu.Separator());
-        Add("从晾衣绳移除", "Remove from line", "×", () => _ = library.RemoveAsync(capture), true);
+        Add("从晾衣绳移除", "Remove from line", "remove", () => _ = library.RemoveAsync(capture), true);
+        Add("取下全部截图", "Remove all screenshots", "remove-all", () => _ = library.RemoveAllAsync(), true);
+        ConfigureMenuAutoClose(menu);
         menu.Opened += (_, _) => busy = true;
-        menu.MouseLeave += (_, _) => menu.IsOpen = false;
         menu.Closed += (_, _) => FinishInteraction();
         card.ContextMenu = menu;
         Point start = default;

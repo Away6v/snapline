@@ -62,6 +62,14 @@ public sealed class TextLibrary
         Changed?.Invoke();
     }
 
+    public void RemoveAll()
+    {
+        if (state.Texts.Count == 0) return;
+        state.Texts.Clear();
+        Save();
+        Changed?.Invoke();
+    }
+
     public void SetCapacity(int capacity)
     {
         preferences.TextCapacity = capacity is 25 or 50 or 100 ? capacity : 100;

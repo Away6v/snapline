@@ -33,15 +33,37 @@ internal static class WarmCardMenu
     internal static MenuItem Item(string title, string symbol, bool destructive = false)
     {
         var header = new StackPanel { Orientation = Orientation.Horizontal };
-        header.Children.Add(new TextBlock
+        var icon = symbol switch
         {
-            Text = symbol,
-            Width = 26,
-            FontFamily = new FontFamily("Segoe UI Symbol"),
-            FontSize = 15,
-            Foreground = destructive ? new SolidColorBrush(Color.FromRgb(178, 82, 72)) : Accent,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+            "preview" => "M 1,8 C 3,4 5.5,2.5 8,2.5 C 10.5,2.5 13,4 15,8 C 13,12 10.5,13.5 8,13.5 C 5.5,13.5 3,12 1,8 Z M 10,8 A 2,2 0 1 1 6,8 A 2,2 0 1 1 10,8 Z",
+            "open" => "M 9,2 L 14,2 L 14,7 M 14,2 L 7,9 M 12,9 L 12,13 L 3,13 L 3,4 L 7,4",
+            "save" => "M 8,1 L 8,10 M 4.5,6.5 L 8,10 L 11.5,6.5 M 2,11 L 2,14 L 14,14 L 14,11",
+            "folder" => "M 1.5,4 L 1.5,13 L 14.5,13 L 14.5,5.5 L 8,5.5 L 6.5,4 Z",
+            "remove" => "M 3,4 L 13,4 M 6,4 L 6,2 L 10,2 L 10,4 M 4.5,4 L 5,14 L 11,14 L 11.5,4 M 7,7 L 7,11 M 9,7 L 9,11",
+            "remove-all" => "M 2,5 L 12,5 M 5,5 L 5,3 L 9,3 L 9,5 M 3.5,5 L 4,14 L 10,14 L 10.5,5 M 6,8 L 6,11 M 8,8 L 8,11 M 12,2 L 15,2 M 13.5,0.5 L 13.5,3.5",
+            _ => null
+        };
+        var color = destructive ? new SolidColorBrush(Color.FromRgb(178, 82, 72)) : Accent;
+        if (icon != null)
+        {
+            var holder = new Grid { Width = 26, Height = 16, VerticalAlignment = VerticalAlignment.Center };
+            holder.Children.Add(new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse(icon), Stroke = color, StrokeThickness = 1.4,
+                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round, Width = 16, Height = 16,
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(holder);
+        }
+        else
+        {
+            header.Children.Add(new TextBlock
+            {
+                Text = symbol, Width = 26, FontFamily = new FontFamily("Segoe UI Symbol"),
+                FontSize = 15, Foreground = color, VerticalAlignment = VerticalAlignment.Center
+            });
+        }
         header.Children.Add(new TextBlock { Text = title, Foreground = Ink, VerticalAlignment = VerticalAlignment.Center });
         return new MenuItem { Header = header, Style = ItemStyle };
     }

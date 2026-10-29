@@ -145,6 +145,34 @@ public sealed class CaptureLibrary
         }
         finally { gate.Release(); }
     }
+    public async Task<bool> TakeOffAsync(Capture item)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (!state.Captures.Remove(item)) return false;
+            Save();
+            Changed?.Invoke();
+            return true;
+        }
+        finally { gate.Release(); }
+    }
+    public async Task RemoveAllAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var changed = false;
+            foreach (var item in state.Captures.ToArray())
+            {
+                if (!await RemoveFileAsync(item)) continue;
+                state.Captures.Remove(item);
+                changed = true;
+            }
+            if (changed) { Save(); Changed?.Invoke(); }
+        }
+        finally { gate.Release(); }
+    }
     private async Task<bool> RemoveFileAsync(Capture item)
     {
         if (!Storage.Owns(item.Path) || !File.Exists(item.Path)) return true;
