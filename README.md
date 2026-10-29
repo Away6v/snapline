@@ -15,7 +15,7 @@
 - 普通 Intel / AMD 电脑：`SnapLine-0.1.0-win-x64.exe`。
 - Windows on ARM 电脑：`SnapLine-0.1.0-win-arm64.exe`。
 
-下载后直接运行 EXE，无须安装 .NET 或管理员权限。程序在 EXE 所在目录的 `Data` 文件夹中保存设置和数据，请将 EXE 放在有写入权限的位置。发布页也提供 ZIP 包供旧版本自动更新使用。首次启动说明会提示剪贴板图片收集已开启；程序随后驻留系统托盘。
+下载并运行 Setup EXE 安装，无须安装 .NET 或管理员权限。默认安装在当前用户的本地程序目录，设置和数据保存在安装目录的 `Data` 文件夹中，卸载时保留。发布页也提供可直接运行的 ZIP 包，用于便携使用和自动更新。首次启动说明会提示剪贴板图片收集已开启；程序随后驻留系统托盘。
 
 兼容目标为 Windows 10 22H2 与 Windows 11。本项目的兼容目标不等同于微软对旧系统的维护承诺。首版为未签名预发布版本，系统可能显示发布者未知；尚未提供代码签名或商店上架。可从托盘面板手动检查更新。
 
@@ -58,7 +58,7 @@
 
 ## 构建
 
-需要 Windows 和 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。
+需要 Windows、[.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) 和 [Inno Setup 6](https://jrsoftware.org/isdl.php)。
 
 ```powershell
 dotnet build -c Release
@@ -66,7 +66,7 @@ dotnet build -c Release
 ./scripts/build.ps1 -Runtime win-arm64
 ```
 
-`outputs/` 中生成便携目录、ZIP 与 SHA-256 校验文件。GitHub Actions 对 x64 与 ARM64 执行相同构建。交叉编译成功不代表对应架构已完成实机验证。
+`outputs/` 中生成安装程序 EXE 和便携 ZIP。GitHub Actions 对 x64 与 ARM64 执行相同构建。交叉编译成功不代表对应架构已完成实机验证。
 
 ## 首版边界与验证
 
@@ -80,4 +80,4 @@ dotnet build -c Release
 
 ### 发布更新
 
-在项目文件中更新 `Version`，提交更改并推送形如 `v1.2.3` 的版本标签。GitHub Actions 会构建 x64 和 ARM64 单文件 EXE、兼容更新的 ZIP 包及 SHA-256 校验文件，并创建带自动生成说明的正式 Release。可在 GitHub 编辑 Release 正文，软件检查更新时会展示该正文。发布前请检查版本号、发布说明和构建结果。软件仅检查最新正式版本；下载、校验后覆盖当前目录并重启，保留 `Data`。
+在项目文件中更新 `Version`，提交更改并推送形如 `v1.2.3` 的版本标签。GitHub Actions 会构建 x64 和 ARM64 安装程序 EXE、兼容更新的 ZIP 包，并创建带自动生成说明的正式 Release。可在 GitHub 编辑 Release 正文，软件检查更新时会展示该正文。发布前请检查版本号、发布说明和构建结果。软件仅检查最新正式版本；使用 GitHub 提供的资源摘要校验下载内容，然后覆盖当前目录并重启，保留 `Data`。旧版程序依赖单独的校验文件，升级到不提供该文件的版本时需要手动下载覆盖。

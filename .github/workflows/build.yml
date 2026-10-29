@@ -18,7 +18,11 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Build portable package
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup --version=6.7.4 -y --no-progress; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+      - name: Build packages
         shell: pwsh
         run: |
           $version = ''
@@ -30,7 +34,6 @@ jobs:
           path: |
             outputs/*.exe
             outputs/*.zip
-            outputs/*.sha256
           if-no-files-found: error
 
   release:

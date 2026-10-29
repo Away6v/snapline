@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 
 namespace SnapLine;
 
-internal sealed record UpdateRelease(string Version, string Notes, string PackageUrl, string ChecksumUrl);
+internal sealed record UpdateRelease(string Version, string Notes, string PackageUrl, string? Digest, string? ChecksumUrl);
 
 internal static class UpdateService
 {
@@ -44,15 +44,23 @@ internal static class UpdateService
             _ => throw new NotSupportedException(Words.T("当前处理器架构不受支持。", "This processor architecture is not supported."))
         };
         var name = $"SnapLine-{version}-{runtime}.zip";
-        string? package = null, checksum = null;
+        string? package = null, digest = null, checksum = null;
         foreach (var asset in root.GetProperty("assets").EnumerateArray())
         {
             var assetName = asset.GetProperty("name").GetString();
-            if (assetName == name) package = asset.GetProperty("browser_download_url").GetString();
+            if (assetName == name)
+            {
+                package = asset.GetProperty("browser_download_url").GetString();
+                if (asset.TryGetProperty("digest", out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    var raw = value.GetString();
+                    if (raw != null && raw.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) digest = raw.Substring(7);
+                }
+            }
             if (assetName == name + ".sha256") checksum = asset.GetProperty("browser_download_url").GetString();
         }
-        if (package == null || checksum == null) throw new InvalidDataException(Words.T("此版本缺少适用于当前设备的安装包或校验文件。", "The package or checksum for this device is missing."));
-        return new UpdateRelease(tag, root.GetProperty("body").GetString() ?? "", package, checksum);
+        if (package == null || (digest == null && checksum == null)) throw new InvalidDataException(Words.T("此版本缺少适用于当前设备的安装包或校验信息。", "The package or checksum for this device is missing."));
+        return new UpdateRelease(tag, root.GetProperty("body").GetString() ?? "", package, digest, checksum);
     }
 
     internal static async Task DownloadAndInstallAsync(UpdateRelease release, IProgress<string>? progress = null)
@@ -66,7 +74,7 @@ internal static class UpdateService
             await using (var input = await Client.GetStreamAsync(release.PackageUrl))
                 await input.CopyToAsync(output);
             progress?.Report(Words.T("正在校验更新…", "Verifying the update…"));
-            var checksum = (await Client.GetStringAsync(release.ChecksumUrl)).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            var checksum = release.Digest ?? (await Client.GetStringAsync(release.ChecksumUrl!)).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
             await using var file = File.OpenRead(archive);
             var actual = Convert.ToHexString(await SHA256.HashDataAsync(file));
             if (checksum == null || !actual.Equals(checksum, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException(Words.T("安装包校验失败。", "Package checksum verification failed."));
