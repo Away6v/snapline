@@ -6,8 +6,6 @@
 
 参考 [Tendedero](https://github.com/alejandrobujan/tendedero) 的交互设计，使用 C# / .NET 10 / WPF 为 Windows 重新实现。独立项目、独立名称与图标，与原作者不存在背书关系。
 
-![Windows 界面，使用合成演示图片渲染](docs/snapline-demo.png)
-
 ## 下载与运行
 
 前往 [Releases](https://github.com/Away6v/snapline/releases) 下载：
