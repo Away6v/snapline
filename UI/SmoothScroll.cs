@@ -70,4 +70,22 @@ internal sealed class SmoothScroll
         running = false;
         clock.Stop();
     }
+
+    internal double SuspendForLayout()
+    {
+        var remaining = running ? target - Offset : 0;
+        Stop();
+        return remaining;
+    }
+
+    internal void ResumeAfterLayout(double remaining)
+    {
+        if (Math.Abs(remaining) < 0.25 || Maximum <= 0 || !viewer.IsVisible) return;
+        position = Offset;
+        target = Math.Clamp(position + remaining, 0, Maximum);
+        if (Math.Abs(target - position) < 0.25) return;
+        running = true;
+        clock.Restart();
+        CompositionTarget.Rendering += Render;
+    }
 }

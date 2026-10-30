@@ -39,6 +39,10 @@ public sealed class Capture
     public BitmapSource? Thumbnail { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public System.Drawing.Point? AnimationOrigin { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ReturningToLine { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Drawing.Rectangle? ReturnFlightBounds { get; set; }
 }
 
 public sealed class State

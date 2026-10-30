@@ -52,6 +52,23 @@ internal static class LineAppearance
     internal static FrameworkElement Rope(string appearance)
     {
         var layer = new Grid { Height = RopeTopInset + RopeSag, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
+        var fade = new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0), EndPoint = new Point(1, 0),
+            GradientStops = new GradientStopCollection
+            {
+                new(Colors.Transparent, 0), new(Colors.White, 0),
+                new(Colors.White, 1), new(Colors.Transparent, 1)
+            }
+        };
+        layer.OpacityMask = fade;
+        // 渐隐宽度保持适度，预览缩窄时按比例收敛。
+        layer.SizeChanged += (_, _) =>
+        {
+            var edge = layer.ActualWidth > 0 ? Math.Min(48 / layer.ActualWidth, 0.18) : 0;
+            fade.GradientStops[1].Offset = edge;
+            fade.GradientStops[2].Offset = 1 - edge;
+        };
         if (appearance == Classic)
         {
             layer.Children.Add(RopeStroke(new SolidColorBrush(Color.FromRgb(0xA8, 0xAE, 0xB7)), 2.2));

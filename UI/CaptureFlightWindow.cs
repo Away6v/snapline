@@ -29,9 +29,12 @@ internal sealed class CaptureFlightWindow : Window
     private readonly ScaleTransform scale = new();
     private readonly RotateTransform rotation = new();
     private readonly TranslateTransform travel = new();
+    private readonly TranslateTransform handoffClock = new();
     private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource handoff = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool started;
     private IntPtr handle;
+    internal Task Handoff => handoff.Task;
 
     public CaptureFlightWindow(Forms.Screen screen, BitmapSource bitmap, double startX, double startY, double startWidth, double startHeight, double endX, double endY, double endWidth, double endHeight, bool dropping = false)
     {
@@ -94,7 +97,7 @@ internal sealed class CaptureFlightWindow : Window
     {
         if (started) return completion.Task;
         started = true;
-        if (!SystemParameters.ClientAreaAnimation) { completion.TrySetResult(); return completion.Task; }
+        if (!SystemParameters.ClientAreaAnimation) { handoff.TrySetResult(); completion.TrySetResult(); return completion.Task; }
         Show();
         Native.SetWindowPos(handle, new IntPtr(-1), screen.Bounds.Left, screen.Bounds.Top, screen.Bounds.Width, screen.Bounds.Height, 0x0010);
         if (dropping)
@@ -115,6 +118,9 @@ internal sealed class CaptureFlightWindow : Window
         else
         {
             var duration = TimeSpan.FromMilliseconds(560);
+            var handoffAnimation = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380));
+            handoffAnimation.Completed += (_, _) => handoff.TrySetResult();
+            handoffClock.BeginAnimation(TranslateTransform.XProperty, handoffAnimation);
             var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
             travel.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(startX, endX, duration) { EasingFunction = easing });
             travel.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(startY, endY, duration) { EasingFunction = easing });
@@ -130,6 +136,8 @@ internal sealed class CaptureFlightWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         image.BeginAnimation(OpacityProperty, null);
+        handoffClock.BeginAnimation(TranslateTransform.XProperty, null);
+        handoff.TrySetResult();
         travel.BeginAnimation(TranslateTransform.XProperty, null);
         travel.BeginAnimation(TranslateTransform.YProperty, null);
         scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);

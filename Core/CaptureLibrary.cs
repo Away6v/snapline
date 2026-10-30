@@ -18,6 +18,8 @@ public sealed class CaptureLibrary
     private int automaticCapacity = 100;
     private DateTime nextRetry = DateTime.MinValue;
     private bool retrying;
+    private readonly Dictionary<string, long> hangingOrder = new(StringComparer.Ordinal);
+    private long nextHangingOrder;
     public event Action? Changed;
     public event Action<string>? Error;
     public IReadOnlyList<Capture> Items => state.Captures;
@@ -102,7 +104,7 @@ public sealed class CaptureLibrary
                 var encoder = new PngBitmapEncoder();
                 encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using (var stream = File.Create(destination)) encoder.Save(stream);
-                return Read(destination).Thumb;
+                return CreateThumbnail(bitmap);
             });
             state.Captures.Add(new Capture { Path = created, Hash = hash, Thumbnail = thumb, PixelWidth = bitmap.PixelWidth, PixelHeight = bitmap.PixelHeight, AnimationOrigin = animationOrigin });
             created = null;
@@ -124,11 +126,11 @@ public sealed class CaptureLibrary
         try { await TrimAsync(); Save(); Changed?.Invoke(); }
         finally { gate.Release(); }
     }
-    private async Task TrimAsync()
+    private async Task TrimAsync(Capture? keep = null)
     {
         while (state.Captures.Count > Capacity)
         {
-            var first = state.Captures[0];
+            var first = state.Captures.First(item => !ReferenceEquals(item, keep));
             if (first.Thumbnail == null || !await RemoveFileAsync(first)) break;
             state.Captures.Remove(first);
         }
@@ -150,10 +152,50 @@ public sealed class CaptureLibrary
         await gate.WaitAsync();
         try
         {
+            RememberHangingOrder();
             if (!state.Captures.Remove(item)) return false;
             Save();
             Changed?.Invoke();
             return true;
+        }
+        finally { gate.Release(); }
+    }
+    private void RememberHangingOrder()
+    {
+        // 保留取下图片的序号，多张图片以不同顺序挂回时也能恢复原有次序。
+        foreach (var capture in state.Captures)
+            if (!hangingOrder.ContainsKey(capture.Id)) hangingOrder[capture.Id] = nextHangingOrder++;
+    }
+    public async Task<bool> ReturnAsync(Capture item, System.Drawing.Rectangle origin)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var image = await Task.Run(() => Read(item.Path));
+            RememberHangingOrder();
+            if (!hangingOrder.TryGetValue(item.Id, out var order))
+                hangingOrder[item.Id] = order = nextHangingOrder++;
+            // 取下期间可能被目录监听再次导入，恢复原记录并合并重复项。
+            state.Captures.RemoveAll(capture => capture.Id == item.Id
+                || capture.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase) || capture.Hash == image.Hash);
+            item.Hash = image.Hash;
+            item.Thumbnail = image.Thumb;
+            item.PixelWidth = image.Full.PixelWidth;
+            item.PixelHeight = image.Full.PixelHeight;
+            item.AnimationOrigin = new System.Drawing.Point(origin.Right, origin.Bottom);
+            item.ReturnFlightBounds = origin;
+            item.ReturningToLine = true;
+            var index = state.Captures.FindIndex(capture => hangingOrder[capture.Id] > order);
+            state.Captures.Insert(index < 0 ? state.Captures.Count : index, item);
+            await TrimAsync(item);
+            Save();
+            Changed?.Invoke();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Error?.Invoke(Words.T("无法重新挂回：", "Cannot return image to line: ") + ex.Message);
+            return false;
         }
         finally { gate.Release(); }
     }
@@ -204,24 +246,31 @@ public sealed class CaptureLibrary
     {
         if (Storage.Owns(item.Path)) return item.Path;
         await gate.WaitAsync();
+        string? path = null;
         try
         {
-            var path = System.IO.Path.Combine(Storage.Inbox, "Edit-" + Guid.NewGuid().ToString("N") + ".png");
+            path = System.IO.Path.Combine(Storage.Inbox, "Edit-" + Guid.NewGuid().ToString("N") + ".png");
+            var destination = path;
             await Task.Run(() =>
             {
                 var bitmap = LoadFull(item.Path);
                 var encoder = new PngBitmapEncoder();
                 encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                using var stream = File.Create(path);
+                using var stream = File.Create(destination);
                 encoder.Save(stream);
             });
             item.Path = path;
+            path = null;
             Save();
             Changed?.Invoke();
-            return path;
+            return item.Path;
         }
         catch (Exception ex) { Error?.Invoke(Words.T("无法创建编辑副本：", "Cannot create editing copy: ") + ex.Message); return null; }
-        finally { gate.Release(); }
+        finally
+        {
+            if (path != null) { try { File.Delete(path); } catch { } }
+            gate.Release();
+        }
     }
     public static BitmapSource LoadFull(string path)
     {
@@ -283,6 +332,10 @@ public sealed class CaptureLibrary
     {
         var (full, alphaRepaired) = LoadFullWithInfo(path);
         var hash = Fingerprint(full);
+        return (CreateThumbnail(full), hash, full, alphaRepaired);
+    }
+    private static BitmapSource CreateThumbnail(BitmapSource full)
+    {
         var scale = Math.Min(1, 420.0 / Math.Max(full.PixelWidth, full.PixelHeight));
         var scaled = new TransformedBitmap(full, new ScaleTransform(scale, scale));
         var stride = checked(scaled.PixelWidth * 4);
@@ -291,7 +344,7 @@ public sealed class CaptureLibrary
         // 缩略图拥有独立像素，避免长期持有完整原图。
         var thumb = BitmapSource.Create(scaled.PixelWidth, scaled.PixelHeight, scaled.DpiX, scaled.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         thumb.Freeze();
-        return (thumb, hash, full, alphaRepaired);
+        return thumb;
     }
     private static string Fingerprint(BitmapSource source)
     {

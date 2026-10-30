@@ -36,6 +36,7 @@ internal sealed class LineWindow : Window
     private readonly Grid cardHost = new();
     private readonly List<Grid> cardContainers = new();
     private readonly Dictionary<string, Grid> cardsById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Border> cardSurfacesById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Capture> capturesById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (ScaleTransform Scale, RotateTransform Tilt, TranslateTransform Shift, TranslateTransform Arrival)> transformsById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ImageSource?> thumbnailsById = new(StringComparer.Ordinal);
@@ -46,7 +47,17 @@ internal sealed class LineWindow : Window
     private readonly HashSet<string> knownCaptureIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> pendingAdditionIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> pendingRemovalIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (System.Drawing.Rectangle Bounds, TaskCompletionSource<bool> Started)> pinTransitions = new(StringComparer.Ordinal);
     private readonly ScrollViewer scroll;
+    private readonly HashSet<(Grid Host, LinearGradientBrush BlurMask, LinearGradientBrush FadeMask)> edgeBlurCards = new();
+    private sealed class DockCard
+    {
+        internal required Grid Container;
+        internal required Border Card;
+        internal readonly ScaleTransform Scale = new(1, 1);
+        internal double Target = 1;
+    }
+    private readonly List<DockCard> dockCards = new();
     private readonly TranslateTransform slide = new();
     private readonly List<FrameworkElement> hitTargets = new();
     private readonly DispatcherTimer copyHintTimer = new() { Interval = TimeSpan.FromMilliseconds(1800) };
@@ -71,6 +82,7 @@ internal sealed class LineWindow : Window
     private int reflowEpoch;
     private int showEpoch;
     private int visibleCount = 8;
+    private long lastEdgeBlurUpdate;
 
     public LineWindow(CaptureLibrary library, TextLibrary textLibrary, Preferences preferences, Action<string> notify)
     {
@@ -94,11 +106,14 @@ internal sealed class LineWindow : Window
         cardHost.Children.Add(cards);
         scroll = new ScrollViewer { Content = cardHost, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(20, 0, 20, 6), Background = Brushes.Transparent };
         smoothScroll = new SmoothScroll(scroll, true);
-        scroll.ScrollChanged += (_, _) => UpdateCardHostWidth();
+        scroll.PreviewMouseMove += (_, _) => UpdateDockEffect();
+        scroll.MouseLeave += (_, _) => ResetDockEffect();
+        scroll.ScrollChanged += (_, _) => { UpdateCardHostWidth(); UpdateEdgeBlur(null, EventArgs.Empty); };
         scroll.SizeChanged += (_, _) => UpdateCardHostWidth();
         SizeChanged += (_, _) => UpdateCardPositions();
         Loaded += (_, _) => QueueCardPositionUpdate();
         root.Children.Add(scroll);
+        CompositionTarget.Rendering += UpdateEdgeBlur;
         SourceInitialized += (_, _) =>
         {
             handle = new WindowInteropHelper(this).Handle;
@@ -129,7 +144,12 @@ internal sealed class LineWindow : Window
         return IntPtr.Zero;
     }
     public void Start() => timer.Start();
-    public void Stop() { closing = true; ClearCopyHint(); smoothScroll.Stop(); timer.Stop(); library.Changed -= OnChanged; textLibrary.Changed -= OnTextChanged; }
+    public void Stop() { CompositionTarget.Rendering -= UpdateEdgeBlur; closing = true; CancelPinTransitions(); ClearCopyHint(); smoothScroll.Stop(); timer.Stop(); library.Changed -= OnChanged; textLibrary.Changed -= OnTextChanged; }
+    private void CancelPinTransitions()
+    {
+        foreach (var transition in pinTransitions.Values) transition.Started.TrySetResult(false);
+        pinTransitions.Clear();
+    }
     internal bool IsRevealed => revealed;
     public void Toggle()
     {
@@ -149,7 +169,27 @@ internal sealed class LineWindow : Window
         revealed = true;
         showEpoch++;
         lastInside = DateTime.UtcNow.AddSeconds(manual ? 2 : 0);
-        Animate(slide, TranslateTransform.YProperty, 0, 260);
+        var start = slide.Y;
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            slide.BeginAnimation(TranslateTransform.YProperty, null);
+            slide.Y = 0;
+        }
+        else
+        {
+            // 从当前显示位置继续，轻微越过终点后回弹，快速反向操作也不会跳帧。
+            var bounce = Math.Min(12, Math.Abs(start) * 0.12);
+            var animation = new DoubleAnimationUsingKeyFrames
+            {
+                Duration = TimeSpan.FromMilliseconds(620), FillBehavior = FillBehavior.Stop
+            };
+            animation.KeyFrames.Add(new LinearDoubleKeyFrame(start, KeyTime.FromPercent(0)));
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(bounce, KeyTime.FromPercent(0.65), new CubicEase { EasingMode = EasingMode.EaseOut }));
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(-bounce * 0.3, KeyTime.FromPercent(0.82), new SineEase { EasingMode = EasingMode.EaseInOut }));
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1), new SineEase { EasingMode = EasingMode.EaseOut }));
+            slide.Y = 0;
+            slide.BeginAnimation(TranslateTransform.YProperty, animation);
+        }
         if (preferences.Capacity == 0 && library.Capacity < Math.Max(100, visibleCount)) await library.SetCapacityAsync(visibleCount);
     }
     private void Conceal()
@@ -157,7 +197,18 @@ internal sealed class LineWindow : Window
         if (!revealed || busy) return;
         revealed = false;
         var epoch = ++showEpoch;
-        var animation = Transition(slide.Y, -Height, 210);
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            slide.BeginAnimation(TranslateTransform.YProperty, null);
+            slide.Y = -Height;
+            Hide();
+            return;
+        }
+        var animation = new DoubleAnimation(slide.Y, -Height, TimeSpan.FromMilliseconds(480))
+        {
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+            FillBehavior = FillBehavior.Stop
+        };
         slide.Y = -Height;
         animation.Completed += (_, _) => { if (!revealed && epoch == showEpoch) Hide(); };
         slide.BeginAnimation(TranslateTransform.YProperty, animation);
@@ -199,10 +250,12 @@ internal sealed class LineWindow : Window
     {
         if (mode is not ("text" or "screenshot") || preferences.DisplayMode == mode) return;
         preferences.DisplayMode = mode;
+        CancelPinTransitions();
         pendingAdditionIds.Clear();
         pendingRemovalIds.Clear();
         cards.Children.Clear();
         cardsById.Clear();
+        cardSurfacesById.Clear();
         capturesById.Clear();
         transformsById.Clear();
         thumbnailsById.Clear();
@@ -239,6 +292,9 @@ internal sealed class LineWindow : Window
         var currentIds = library.Items.Select(capture => capture.Id).ToHashSet(StringComparer.Ordinal);
         pendingAdditionIds.UnionWith(currentIds.Except(knownCaptureIds));
         pendingRemovalIds.UnionWith(knownCaptureIds.Except(currentIds));
+        // 合并同一轮中的相反操作，避免已恢复的卡片仍执行取下动画。
+        pendingRemovalIds.ExceptWith(currentIds);
+        pendingAdditionIds.RemoveWhere(id => !currentIds.Contains(id));
         knownCaptureIds.Clear();
         knownCaptureIds.UnionWith(currentIds);
         if (pendingAdditionIds.Count > 0 && preferences.DisplayMode == "screenshot") ShowForNewCapture();
@@ -290,6 +346,8 @@ internal sealed class LineWindow : Window
     {
         if (!revealed || !SystemParameters.ClientAreaAnimation)
         {
+            foreach (var id in pendingRemovalIds)
+                if (pinTransitions.Remove(id, out var pending)) pending.Started.TrySetResult(false);
             pendingRemovalIds.Clear();
             Rebuild();
             return;
@@ -301,6 +359,8 @@ internal sealed class LineWindow : Window
         pendingRemovalIds.Clear();
         var flights = new List<Task>();
         var delayedReflow = false;
+        foreach (var id in removedIds.Where(id => !transformsById.ContainsKey(id)))
+            if (pinTransitions.Remove(id, out var pending)) pending.Started.TrySetResult(false);
         foreach (var id in removedIds.Where(transformsById.ContainsKey))
         {
             var container = cardsById[id];
@@ -314,20 +374,39 @@ internal sealed class LineWindow : Window
                 transforms.Shift.BeginAnimation(TranslateTransform.YProperty, null);
                 transforms.Shift.X = shiftX;
                 transforms.Shift.Y = shiftY;
-                var card = container.Children.OfType<Border>().First();
+                var card = cardSurfacesById[id];
+                var inViewport = card.TranslatePoint(new Point(), scroll);
+                if (!pinTransitions.ContainsKey(id) && (inViewport.X + card.ActualWidth < 0 || inViewport.X > scroll.ViewportWidth))
+                {
+                    // 不为视口外的卡片创建全屏飞行窗口，批量移除时避免大量并发绘制。
+                    container.Opacity = 0;
+                    continue;
+                }
                 var bitmap = capturesById[id].Thumbnail ?? throw new InvalidOperationException("Thumbnail is unavailable.");
-                var start = card.TranslatePoint(new Point(), this);
+                var start = card.TransformToVisual(this).TransformBounds(new Rect(card.RenderSize));
                 var targetScreen = screen ?? Forms.Screen.PrimaryScreen!;
                 var monitorScale = Native.Scale(targetScreen);
                 var screenHeight = targetScreen.Bounds.Height / monitorScale;
-                var endY = Math.Max(start.Y, (screenHeight - card.ActualHeight) / 2);
-                var flight = new CaptureFlightWindow(targetScreen, bitmap, start.X, start.Y, card.ActualWidth, card.ActualHeight,
-                    start.X, endY, card.ActualWidth, card.ActualHeight, true);
+                var endY = Math.Max(start.Y, (screenHeight - start.Height) / 2);
+                var isPin = pinTransitions.TryGetValue(id, out var transition);
+                var target = transition.Bounds;
+                var flight = isPin
+                    ? new CaptureFlightWindow(targetScreen, bitmap, start.X, start.Y, start.Width, start.Height,
+                        (target.Left - targetScreen.Bounds.Left) / monitorScale, (target.Top - targetScreen.Bounds.Top) / monitorScale,
+                        target.Width / monitorScale, target.Height / monitorScale)
+                    : new CaptureFlightWindow(targetScreen, bitmap, start.X, start.Y, start.Width, start.Height,
+                        start.X, endY, start.Width, start.Height, true);
                 flights.Add(flight.PlayAsync());
+                if (isPin)
+                {
+                    pinTransitions.Remove(id);
+                    _ = flight.Handoff.ContinueWith(_ => transition.Started.TrySetResult(true), TaskScheduler.Default);
+                }
                 Animate(container, OpacityProperty, 0, 120);
             }
             catch
             {
+                if (pinTransitions.Remove(id, out var pending)) pending.Started.TrySetResult(false);
                 delayedReflow = true;
                 var duration = TimeSpan.FromMilliseconds(SystemParameters.ClientAreaAnimation ? 420 : 0);
                 transforms.Shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(transforms.Shift.Y, transforms.Shift.Y + 300, duration) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
@@ -396,7 +475,7 @@ internal sealed class LineWindow : Window
         pendingReflowPositions.Clear();
         ++reflowEpoch;
         reflowAnimationRunning = false;
-        smoothScroll.Stop();
+        var remainingScroll = smoothScroll.SuspendForLayout();
         // 只移除失效的卡片，保留其余元素和正在运行的摇曳时钟。
         foreach (var id in cardsById.Keys.ToArray())
         {
@@ -406,6 +485,7 @@ internal sealed class LineWindow : Window
             hitTargets.RemoveAll(target => target.IsDescendantOf(retired));
             cards.Children.Remove(retired);
             cardsById.Remove(id);
+            cardSurfacesById.Remove(id);
             capturesById.Remove(id);
             transformsById.Remove(id);
             thumbnailsById.Remove(id);
@@ -448,14 +528,22 @@ internal sealed class LineWindow : Window
         }
         cardContainers.Clear();
         cardContainers.AddRange(cards.Children.OfType<Grid>());
-        var scrollToNewest = pendingAdditionIds.Count > 0;
+        var returned = library.Items.FirstOrDefault(capture => capture.ReturningToLine);
+        var scrollToNewest = pendingAdditionIds.Count > 0 && returned == null;
         pendingAdditionIds.Clear();
         // 在同一轮布局中完成移除、居中和位移补偿，避免先闪到终点再开始动画。
         if (scrollToNewest) scroll.ScrollToRightEnd();
         UpdateCardHostWidth();
         root.UpdateLayout();
+        if (returned != null && cardsById.TryGetValue(returned.Id, out var returnedCard))
+        {
+            returnedCard.BringIntoView();
+            foreach (var capture in library.Items) capture.ReturningToLine = false;
+            root.UpdateLayout();
+        }
         UpdateCardPositions();
         root.UpdateLayout();
+        if (!scrollToNewest && returned == null) smoothScroll.ResumeAfterLayout(remainingScroll);
         AnimateReflowPositions(previousPositions);
     }
     private void RebuildText()
@@ -463,6 +551,7 @@ internal sealed class LineWindow : Window
         if (closing) return;
         cards.Children.Clear();
         cardsById.Clear();
+        cardSurfacesById.Clear();
         capturesById.Clear();
         transformsById.Clear();
         thumbnailsById.Clear();
@@ -493,7 +582,7 @@ internal sealed class LineWindow : Window
             create.Click += (_, _) => CreateText();
             hitTargets.Add(create);
             var holder = new Grid { Width = 252, Height = 148, Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Top };
-            holder.Children.Add(empty);
+            AddEdgeBlurCard(holder, empty);
             holder.Children.Add(LineAppearance.Peg(preferences.Appearance));
             cards.Children.Add(holder);
             cardContainers.Add(holder);
@@ -534,7 +623,7 @@ internal sealed class LineWindow : Window
             Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.12 },
             Child = text, Cursor = Cursors.Hand
         };
-        container.Children.Add(border);
+        AddEdgeBlurCard(container, border, true);
         var peg = LineAppearance.Peg(preferences.Appearance, index);
         container.Children.Add(peg);
         cardContainers.Add(container);
@@ -558,7 +647,37 @@ internal sealed class LineWindow : Window
         menu.Opened += (_, _) => busy = true;
         menu.Closed += (_, _) => FinishInteraction();
         border.ContextMenu = menu;
-        border.MouseLeftButtonDown += (_, e) => { busy = true; if (e.ClickCount == 2) OpenText(entry, false); else { CopyCard(); FinishInteraction(); } e.Handled = true; };
+        Point start = default;
+        var pressed = false;
+        var consumed = false;
+        var hold = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(550) };
+        hold.Tick += (_, _) => { hold.Stop(); if (!pressed) return; consumed = true; OpenText(entry, true); };
+        border.MouseLeftButtonDown += (_, e) =>
+        {
+            pressed = true; consumed = false; start = e.GetPosition(border); busy = true;
+            border.CaptureMouse();
+            if (e.ClickCount == 2) { consumed = true; OpenText(entry, false); }
+            else hold.Start();
+            e.Handled = true;
+        };
+        border.MouseMove += (_, e) =>
+        {
+            if (!pressed || consumed || e.LeftButton != MouseButtonState.Pressed) return;
+            var point = e.GetPosition(border);
+            if (Math.Abs(point.X - start.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(point.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            consumed = true; pressed = false; hold.Stop(); border.ReleaseMouseCapture();
+            try { DragDrop.DoDragDrop(border, new DataObject(DataFormats.UnicodeText, entry.Text), DragDropEffects.Copy); }
+            catch (Exception ex) { notify(Words.T("拖放失败：", "Drag failed: ") + ex.Message); }
+            finally { FinishInteraction(); }
+        };
+        border.MouseLeftButtonUp += (_, e) =>
+        {
+            if (!pressed) return;
+            hold.Stop(); pressed = false; border.ReleaseMouseCapture();
+            if (!consumed && new Rect(border.RenderSize).Contains(e.GetPosition(border))) CopyCard();
+            FinishInteraction(); e.Handled = true;
+        };
+        border.LostMouseCapture += (_, _) => { if (pressed) { pressed = false; hold.Stop(); FinishInteraction(); } };
         var remove = CreateRemoveButton();
         container.Children.Add(remove);
         hitTargets.Add(remove);
@@ -572,8 +691,126 @@ internal sealed class LineWindow : Window
         container.MouseLeave += (_, _) => ShowRemove(remove.IsKeyboardFocusWithin);
         remove.IsKeyboardFocusWithinChanged += (_, _) => ShowRemove(container.IsMouseOver || remove.IsKeyboardFocusWithin);
         container.Loaded += (_, _) => QueueCardPositionUpdate();
-        container.Unloaded += (_, _) => { if (ReferenceEquals(copyHintContainer, container)) ClearCopyHint(); };
+        container.Unloaded += (_, _) => { hold.Stop(); if (ReferenceEquals(copyHintContainer, container)) ClearCopyHint(); };
         return container;
+    }
+    private void AddEdgeBlurCard(Grid container, Border card, bool dockEffect = false)
+    {
+        // 在原卡片上叠加模糊副本和柔和的乳白色，形成两端的毛玻璃效果。
+        var host = new Grid
+        {
+            Margin = card.Margin,
+            HorizontalAlignment = card.HorizontalAlignment,
+            VerticalAlignment = card.VerticalAlignment,
+            Width = card.Width,
+            Height = card.Height
+        };
+        card.Margin = new Thickness(0);
+        card.HorizontalAlignment = HorizontalAlignment.Stretch;
+        card.VerticalAlignment = VerticalAlignment.Stretch;
+        var clearHost = new Grid();
+        clearHost.Children.Add(card);
+        var blurred = new System.Windows.Shapes.Rectangle
+        {
+            Fill = new VisualBrush(card) { Stretch = Stretch.Fill },
+            Effect = new BlurEffect { Radius = 20 },
+            IsHitTestVisible = false
+        };
+        var blurMask = new LinearGradientBrush { MappingMode = BrushMappingMode.Absolute };
+        blurred.OpacityMask = blurMask;
+        var frost = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(250, 248, 243)),
+            CornerRadius = card.CornerRadius,
+            Opacity = 0.36,
+            OpacityMask = blurMask,
+            IsHitTestVisible = false
+        };
+        host.Children.Add(clearHost);
+        host.Children.Add(blurred);
+        host.Children.Add(frost);
+        container.Children.Add(host);
+        var fadeMask = new LinearGradientBrush { MappingMode = BrushMappingMode.Absolute };
+        host.OpacityMask = fadeMask;
+        var item = (host, blurMask, fadeMask);
+        host.Loaded += (_, _) => edgeBlurCards.Add(item);
+        host.Unloaded += (_, _) => edgeBlurCards.Remove(item);
+        if (dockEffect)
+        {
+            var dock = new DockCard { Container = container, Card = card };
+            // 只缩放卡片内容，卡片顶边和夹子的位置均保持不变。
+            host.RenderTransformOrigin = new Point(0.5, 0);
+            host.RenderTransform = dock.Scale;
+            host.Loaded += (_, _) => dockCards.Add(dock);
+            host.Unloaded += (_, _) => dockCards.Remove(dock);
+        }
+    }
+    private void UpdateDockEffect()
+    {
+        if (!IsVisible || !dockCards.Any(item => item.Card.IsMouseOver)) { ResetDockEffect(); return; }
+        var pointer = Mouse.GetPosition(root);
+        foreach (var item in dockCards)
+        {
+            if (!item.Container.IsLoaded || !item.Container.IsDescendantOf(scroll)) continue;
+            var center = item.Container.TranslatePoint(new Point(item.Container.ActualWidth / 2, 0), root).X;
+            var radius = Math.Max(120, item.Container.ActualWidth * 1.35);
+            var proximity = Math.Max(0, 1 - Math.Abs(pointer.X - center) / radius);
+            var target = 1 + 0.13 * proximity * proximity * (3 - 2 * proximity);
+            SetDockScale(item, target);
+        }
+    }
+    private void ResetDockEffect()
+    {
+        foreach (var item in dockCards) SetDockScale(item, 1);
+    }
+    private static void SetDockScale(DockCard item, double target)
+    {
+        if (Math.Abs(item.Target - target) < 0.01) return;
+        item.Target = target;
+        Animate(item.Scale, ScaleTransform.ScaleXProperty, target, 170);
+        Animate(item.Scale, ScaleTransform.ScaleYProperty, target, 170);
+    }
+    private void UpdateEdgeBlur(object? sender, EventArgs e)
+    {
+        if (!IsVisible || scroll.ActualWidth <= 0) return;
+        // 边缘蒙版不必跟随每次布局重复计算，限制刷新频率以减轻动画负担。
+        var now = Stopwatch.GetTimestamp();
+        if ((now - lastEdgeBlurUpdate) / (double)Stopwatch.Frequency < 1.0 / 30) return;
+        lastEdgeBlurUpdate = now;
+        var width = scroll.ViewportWidth;
+        if (width <= 0) return;
+        var edge = Math.Min(36 / width, 0.5);
+        var fadeEdge = Math.Min(56 / width, 0.5);
+        foreach (var (host, mask, fadeMask) in edgeBlurCards)
+        {
+            // 切换模式时卸载事件可能晚于卡片脱离视觉树。
+            if (!host.IsDescendantOf(scroll)) continue;
+            var inverse = host.TransformToVisual(scroll).Inverse;
+            if (inverse == null) continue;
+            var start = inverse.Transform(new Point(0, 0));
+            var end = inverse.Transform(new Point(width, 0));
+            if (mask.StartPoint != start) mask.StartPoint = start;
+            if (mask.EndPoint != end) mask.EndPoint = end;
+            if (fadeMask.StartPoint != start) fadeMask.StartPoint = start;
+            if (fadeMask.EndPoint != end) fadeMask.EndPoint = end;
+            if (fadeMask.GradientStops.Count != 10 || fadeMask.GradientStops[4].Offset != fadeEdge)
+            {
+                // 卡片在视口边界前平滑淡出，露出后方背景。
+                fadeMask.GradientStops.Clear();
+                var alpha = new byte[] { 0, 40, 128, 215, 255 };
+                for (var i = 0; i < alpha.Length; i++)
+                    fadeMask.GradientStops.Add(new GradientStop(Color.FromArgb(alpha[i], 255, 255, 255), fadeEdge * i / 4));
+                fadeMask.GradientStops.Add(new GradientStop(Colors.White, 1 - fadeEdge));
+                for (var i = 3; i >= 0; i--)
+                    fadeMask.GradientStops.Add(new GradientStop(Color.FromArgb(alpha[i], 255, 255, 255), 1 - fadeEdge * i / 4));
+            }
+            if (mask.GradientStops.Count == 4 && mask.GradientStops[1].Offset == edge) continue;
+            mask.GradientStops.Clear();
+            mask.GradientStops.Add(new GradientStop(Colors.White, 0));
+            mask.GradientStops.Add(new GradientStop(Colors.Transparent, edge));
+            mask.GradientStops.Add(new GradientStop(Colors.Transparent, 1 - edge));
+            mask.GradientStops.Add(new GradientStop(Colors.White, 1));
+        }
     }
     private static void ConfigureMenuAutoClose(ContextMenu menu)
     {
@@ -738,7 +975,7 @@ internal sealed class LineWindow : Window
                 TextWrapping = TextWrapping.Wrap
             }
         };
-        container.Children.Add(card);
+        AddEdgeBlurCard(container, card);
         container.Children.Add(LineAppearance.Peg(preferences.Appearance));
         cardContainers.Add(container);
         return container;
@@ -764,7 +1001,7 @@ internal sealed class LineWindow : Window
         capturesById[capture.Id] = capture;
         transformsById[capture.Id] = (scale, tilt, shift, arrival);
         thumbnailsById[capture.Id] = capture.Thumbnail;
-        var animateEntry = pendingAdditionIds.Contains(capture.Id) && SystemParameters.ClientAreaAnimation;
+        var animateEntry = (pendingAdditionIds.Contains(capture.Id) || capture.ReturningToLine) && SystemParameters.ClientAreaAnimation;
         if (animateEntry) container.Opacity = 0;
         var entryStarted = false;
         container.Loaded += (_, _) =>
@@ -801,6 +1038,7 @@ internal sealed class LineWindow : Window
         cardBorderHover.Setters.Add(new Setter(Border.BorderBrushProperty, LineAppearance.CardHover(preferences.Appearance, clipIndex)));
         cardStyle.Triggers.Add(cardBorderHover);
         var card = new Border { Margin = new Thickness(0, LineAppearance.CardTop, 0, 0), CornerRadius = new CornerRadius(10), Style = cardStyle, Padding = new Thickness(7), Cursor = Cursors.Hand, Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.12 } };
+        cardSurfacesById[capture.Id] = card;
         card.CacheMode = new BitmapCache();
         card.Width = imageWidth + 16;
         card.Height = imageHeight + 16;
@@ -814,7 +1052,7 @@ internal sealed class LineWindow : Window
         interior.Children.Add(preview);
         Grid.SetRow(preview, 0);
         var remove = CreateRemoveButton();
-        card.Child = interior; container.Children.Add(card);
+        card.Child = interior; AddEdgeBlurCard(container, card, true);
         container.Children.Add(remove);
         remove.Click += async (_, e) =>
         {
@@ -835,24 +1073,33 @@ internal sealed class LineWindow : Window
         var peg = LineAppearance.Peg(preferences.Appearance, clipIndex);
         peg.CacheMode = new BitmapCache();
         peg.Cursor = Cursors.Hand;
-        peg.ToolTip = Words.T("取下并钉在桌面", "Pin to desktop");
-        peg.MouseLeftButtonDown += async (_, e) =>
+        peg.ToolTip = ThemeToolTips.Create(Words.T("取下并钉在桌面", "Pin to desktop"));
+        ToolTipService.SetInitialShowDelay(peg, 350);
+        async Task PinToScreenAsync()
         {
-            e.Handled = true;
             if (!peg.IsEnabled) return;
             peg.IsEnabled = false;
             try
             {
-                var bitmap = await Task.Run(() => CaptureLibrary.LoadFull(capture.Path));
-                if (!IsCurrentCard(capture.Id, container)) return;
+                var bitmap = await Task.Run(() => PinnedCaptureWindow.PrepareImage(CaptureLibrary.LoadFull(capture.Path)));
+                if (!IsCurrentCard(capture.Id, container)) { bitmap.Dispose(); return; }
                 var target = screen ?? Forms.Screen.FromPoint(Forms.Cursor.Position);
-                var pinned = new PinnedCaptureWindow(bitmap, target, capture.Path, library, notify);
-                pinned.Show();
-                if (!await library.TakeOffAsync(capture)) pinned.Close();
+                var pinned = new PinnedCaptureWindow(bitmap, target, capture, library, notify);
+                // 在飞行动画开始前准备贴图画面，淡入期间只提交透明度。
+                pinned.PrepareFrame();
+                var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                pinTransitions[capture.Id] = (pinned.ImageBounds, started);
+                if (!await library.TakeOffAsync(capture)) { pinTransitions.Remove(capture.Id); pinned.Dispose(); return; }
+                var completed = await Task.WhenAny(started.Task, Task.Delay(5000));
+                var animate = completed == started.Task && await started.Task;
+                if (!animate) pinTransitions.Remove(capture.Id);
+                if (closing) { pinned.Dispose(); return; }
+                pinned.ShowWithFade(animate);
             }
             catch (Exception ex) { notify(Words.T("无法钉住图片：", "Cannot pin image: ") + ex.Message); }
             finally { peg.IsEnabled = true; }
-        };
+        }
+        peg.MouseLeftButtonDown += async (_, e) => { e.Handled = true; await PinToScreenAsync(); };
         container.Children.Add(peg);
         hitTargets.Add(peg);
         hitTargets.Add(card);
@@ -866,6 +1113,7 @@ internal sealed class LineWindow : Window
         }
         Add("复制图片", "Copy image", "⧉", () => _ = CopyCardAsync());
         Add("预览", "Preview", "preview", () => Preview(capture));
+        Add("钉在屏幕", "Pin to screen", "pin", () => _ = PinToScreenAsync());
         Add("用默认应用打开", "Open with default app", "open", () => Open(capture.Path));
         Add("用画图编辑副本", "Edit in Paint", "✎", () => _ = EditAsync(capture));
         Add("另存为…", "Save as…", "save", () => SaveAs(capture));
@@ -944,11 +1192,21 @@ internal sealed class LineWindow : Window
             var pointerY = (origin.Y - targetScreen.Bounds.Top) / monitorScale;
             var startX = Math.Clamp(pointerX - startWidth, 0, Math.Max(0, screenWidth - startWidth));
             var startY = Math.Clamp(pointerY - startHeight, 0, Math.Max(0, screenHeight - startHeight));
+            if (capture.ReturnFlightBounds is System.Drawing.Rectangle bounds)
+            {
+                // 挂回时从贴图当前的位置和尺寸开始，沿用截图入场动画。
+                startX = (bounds.Left - targetScreen.Bounds.Left) / monitorScale;
+                startY = (bounds.Top - targetScreen.Bounds.Top) / monitorScale;
+                startWidth = bounds.Width / monitorScale;
+                startHeight = bounds.Height / monitorScale;
+                capture.ReturnFlightBounds = null;
+                capture.AnimationOrigin = null;
+            }
             var targetX = targetCenter.X - targetWidth / 2;
             var targetY = targetCenter.Y - targetHeight / 2;
             var flight = new CaptureFlightWindow(targetScreen, bitmap, startX, startY, startWidth, startHeight, targetX, targetY, targetWidth, targetHeight);
             var animation = flight.PlayAsync();
-            await Task.Delay(380);
+            await flight.Handoff;
             if (!IsCurrentCard(capture.Id, container)) { await animation; return; }
             scale.ScaleX = 0.96;
             scale.ScaleY = 0.96;
@@ -1051,7 +1309,9 @@ internal sealed class LineWindow : Window
             }
             catch (InvalidOperationException) { continue; }
             var margin = container.Margin;
-            container.Margin = new Thickness(margin.Left, LineAppearance.PegTop(center.X, ActualWidth), margin.Right, margin.Bottom);
+            var top = LineAppearance.PegTop(center.X, ActualWidth);
+            if (Math.Abs(margin.Top - top) >= 0.25)
+                container.Margin = new Thickness(margin.Left, top, margin.Right, margin.Bottom);
         }
     }
     private void QueueCardPositionUpdate()

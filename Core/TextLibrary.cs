@@ -86,7 +86,6 @@ public sealed class TextLibrary
             state.Texts.Remove(oldest);
         }
     }
-
     private void Save()
     {
         try { Storage.Save(state); }
