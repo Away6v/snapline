@@ -12,6 +12,15 @@ namespace SnapLine;
 
 public sealed class App : Application
 {
+#if DEBUG
+    internal const string DisplayName = "SnapLine 测试版";
+    internal const bool IsDevelopment = true;
+    private const string InstanceName = @"Local\SnapLine.Desktop.Development";
+#else
+    internal const string DisplayName = "SnapLine";
+    internal const bool IsDevelopment = false;
+    private const string InstanceName = @"Local\SnapLine.Desktop";
+#endif
     private Mutex? instance;
     private Forms.NotifyIcon? tray;
     private Collectors? collectors;
@@ -35,8 +44,8 @@ public sealed class App : Application
     {
         base.OnStartup(e);
         noticeTimer.Tick += (_, _) => ShowNextNotice();
-        instance = new Mutex(true, @"Local\SnapLine.Desktop", out var first);
-        if (!first) { MessageBox.Show("SnapLine 已在托盘运行 / SnapLine is already running in the tray.", "SnapLine"); Shutdown(); return; }
+        instance = new Mutex(true, InstanceName, out var first);
+        if (!first) { MessageBox.Show(DisplayName + " 已在托盘运行 / is already running in the tray.", DisplayName); Shutdown(); return; }
         var updateAck = Environment.GetEnvironmentVariable("SNAPLINE_UPDATE_ACK");
         var updateToken = Environment.GetEnvironmentVariable("SNAPLINE_UPDATE_TOKEN");
         DispatcherTimer? progressTimer = null;
@@ -97,7 +106,7 @@ public sealed class App : Application
             {
                 MessageBox.Show(Words.T(
                     "欢迎使用截图晾衣绳！\n\n已默认开启剪贴板截图与文本收集，内容仅保存在本机。复制的文件及本应用复制的内容会被忽略。\n\n鼠标停留屏幕顶部，或按 Ctrl+Alt+T 展开。托盘右键面板可切换“文本 / 截图”、新建文本及调整收集设置。\n\n截图卡片可复制、预览、编辑或拖出分享；文本卡片可复制、查看和编辑。\n\n右键托盘图标打开控制面板。检查更新时会连接 GitHub，内容不会上传。",
-                    "Welcome to SnapLine!\n\nClipboard image and text collection are on by default. Content stays on this device. Copied files and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or press Ctrl+Alt+T. Right-click the tray icon to switch between Text and Screenshots, create text, and adjust collection settings.\n\nScreenshot cards can be copied, previewed, edited, or dragged to share. Text cards can be copied, viewed, and edited.\n\nChecking for updates connects to GitHub. Your content is not uploaded."), "SnapLine", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "Welcome to SnapLine!\n\nClipboard image and text collection are on by default. Content stays on this device. Copied files and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or use the show shortcut. Right-click the tray icon to switch between Text and Screenshots, create text, and adjust collection settings.\n\nScreenshot cards can be copied, previewed, edited, or dragged to share. Text cards can be copied, viewed, and edited.\n\nChecking for updates connects to GitHub. Your content is not uploaded.").Replace("Ctrl+Alt+T", IsDevelopment ? "Ctrl+Alt+Shift+T" : "Ctrl+Alt+T"), DisplayName, MessageBoxButton.OK, MessageBoxImage.Information);
                 state.Preferences.OnboardingComplete = true;
                 library.Save();
                 line.Toggle();
@@ -111,7 +120,7 @@ public sealed class App : Application
         catch (Exception ex)
         {
             progressTimer?.Stop();
-            MessageBox.Show(Words.T("SnapLine 无法启动：\n", "SnapLine could not start:\n") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(Words.T(DisplayName + " 无法启动：\n", DisplayName + " could not start:\n") + ex.Message, DisplayName, MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
     }
@@ -119,7 +128,7 @@ public sealed class App : Application
     {
         if (tray != null) return;
         using var resource = GetResourceStream(new Uri("pack://application:,,,/Assets/snapline.ico")).Stream;
-        tray = new Forms.NotifyIcon { Icon = new System.Drawing.Icon(resource), Visible = true, Text = "SnapLine" };
+        tray = new Forms.NotifyIcon { Icon = new System.Drawing.Icon(resource), Visible = true, Text = DisplayName };
         tray.DoubleClick += (_, _) => { trayPanel?.Close(); line?.Toggle(); };
         tray.MouseUp += (_, e) =>
         {
@@ -239,7 +248,7 @@ public sealed class App : Application
     private void ShowNextNotice()
     {
         if (tray == null || notices.Count == 0) { noticeTimer.Stop(); return; }
-        tray.ShowBalloonTip(6000, "SnapLine", notices.Dequeue(), Forms.ToolTipIcon.Warning);
+        tray.ShowBalloonTip(6000, DisplayName, notices.Dequeue(), Forms.ToolTipIcon.Warning);
         noticeTimer.Start();
     }
     protected override void OnExit(ExitEventArgs e)

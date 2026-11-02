@@ -19,9 +19,9 @@ public sealed class Preferences
     public string Language { get; set; } = CultureInfo.CurrentUICulture.Name.StartsWith("zh") ? "zh" : "en";
     public int Capacity { get; set; } = 100;
     public int ImageScalePercent { get; set; } = 10;
-    public uint HotkeyModifiers { get; set; } = 3;
+    public uint HotkeyModifiers { get; set; } = App.IsDevelopment ? 7u : 3u;
     public uint HotkeyKey { get; set; } = 0x54;
-    public uint ModeHotkeyModifiers { get; set; } = 3;
+    public uint ModeHotkeyModifiers { get; set; } = App.IsDevelopment ? 7u : 3u;
     public uint ModeHotkeyKey { get; set; } = 0x4D;
     public string Appearance { get; set; } = "hemp";
     public List<string> WatchFolders { get; set; } = new();
@@ -67,7 +67,7 @@ public sealed class TextEntry
 public static class Storage
 {
     // 默认把设置和截图放在程序包内；显式指定数据目录时仍使用指定位置。
-    private static readonly bool PortableDefault = Environment.GetEnvironmentVariable("SNAPLINE_DATA_DIR") == null;
+    private static readonly bool PortableDefault = !App.IsDevelopment && Environment.GetEnvironmentVariable("SNAPLINE_DATA_DIR") == null;
     public static readonly string Root = System.IO.Path.GetFullPath(Environment.GetEnvironmentVariable("SNAPLINE_DATA_DIR") ?? System.IO.Path.Combine(AppContext.BaseDirectory, "Data"));
     public static readonly string Inbox = System.IO.Path.Combine(Root, "Inbox");
     public static readonly string StatePath = System.IO.Path.Combine(Root, "state.json");

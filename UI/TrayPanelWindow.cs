@@ -96,7 +96,7 @@ internal sealed class TrayPanelWindow : Window
         this.exportBackup = exportBackup;
         this.restoreBackup = restoreBackup;
         this.updateStatus = updateStatus;
-        Title = "SnapLine";
+        Title = App.DisplayName;
         Width = 360;
         Height = 520;
         WindowStyle = WindowStyle.None;
@@ -269,7 +269,7 @@ internal sealed class TrayPanelWindow : Window
             VerticalAlignment = VerticalAlignment.Center
         });
         var brand = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        brand.Children.Add(Label("SnapLine", 17, Ink, FontWeights.Bold));
+        brand.Children.Add(Label(App.DisplayName, 17, Ink, FontWeights.Bold));
         Grid.SetColumn(brand, 1);
         header.Children.Add(brand);
         var version = typeof(TrayPanelWindow).Assembly.GetName().Version;
@@ -324,7 +324,7 @@ internal sealed class TrayPanelWindow : Window
         main.Margin = new Thickness(0, 0, 4, 0);
         main.Click += (_, _) => { Close(); toggleLine(); };
         actions.Children.Add(main);
-        var quit = IconButton(Words.T("退出 SnapLine", "Quit SnapLine"), DangerStyle, "power-off", Alert, 38);
+        var quit = IconButton(Words.T("退出 " + App.DisplayName, "Quit " + App.DisplayName), DangerStyle, "power-off", Alert, 38);
         quit.Margin = new Thickness(4, 0, 0, 0);
         quit.Click += (_, _) => { Close(); exit(); };
         Grid.SetColumn(quit, 1);
@@ -1162,7 +1162,7 @@ internal sealed class TrayPanelWindow : Window
         try
         {
             using var run = Registry.CurrentUser.OpenSubKey(RunKey);
-            return run?.GetValue("SnapLine") != null;
+            return run?.GetValue(App.DisplayName) != null;
         }
         catch { return false; }
     }
@@ -1170,8 +1170,8 @@ internal sealed class TrayPanelWindow : Window
     private static void SetStartup(bool enabled)
     {
         using var run = Registry.CurrentUser.CreateSubKey(RunKey) ?? throw new IOException("无法打开开机启动设置。");
-        if (enabled) run.SetValue("SnapLine", "\"" + Environment.ProcessPath + "\"");
-        else run.DeleteValue("SnapLine", false);
+        if (enabled) run.SetValue(App.DisplayName, "\"" + Environment.ProcessPath + "\"");
+        else run.DeleteValue(App.DisplayName, false);
     }
 
     private string AppearanceText() => preferences.Appearance == LineAppearance.Classic

@@ -69,7 +69,7 @@ internal sealed partial class CaptureEditorWindow : Window
         this.capture = capture;
         history.Add(bitmap);
         saved = bitmap;
-        Title = "SnapLine Editor";
+        Title = App.DisplayName + " Editor";
         Width = 1050; Height = 720; MinWidth = 650; MinHeight = 420;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(250, 248, 243));

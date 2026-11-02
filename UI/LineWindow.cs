@@ -97,7 +97,7 @@ internal sealed class LineWindow : Window
         copyBorderTimer.Tick += (_, _) => { copyBorderTimer.Stop(); ClearCopyBorder(); };
         knownCaptureIds.UnionWith(library.Items.Select(capture => capture.Id));
         knownTextIds.UnionWith(textLibrary.Items.Select(entry => entry.Id));
-        Title = "SnapLine"; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize;
+        Title = App.DisplayName; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize;
         AllowsTransparency = true; Background = Brushes.Transparent; ShowInTaskbar = false; ShowActivated = false; Topmost = true;
         Height = 244; Width = 1000;
         FontFamily = new FontFamily("Segoe UI");
@@ -1618,7 +1618,7 @@ internal sealed class LineWindow : Window
         try
         {
             var image = await Task.Run(() => CaptureLibrary.LoadFull(capture.Path));
-            var preview = new Window { Title = "SnapLine · " + Path.GetFileName(capture.Path), Width = 900, Height = 620, WindowStartupLocation = WindowStartupLocation.CenterScreen, Background = AppTheme.Surface };
+            var preview = new Window { Title = App.DisplayName + " · " + Path.GetFileName(capture.Path), Width = 900, Height = 620, WindowStartupLocation = WindowStartupLocation.CenterScreen, Background = AppTheme.Surface };
             preview.Content = new Image { Source = image, Stretch = Stretch.Uniform, Margin = new Thickness(16) };
             preview.KeyDown += (_, e) => { if (e.Key == Key.Escape) preview.Close(); };
             preview.Show();

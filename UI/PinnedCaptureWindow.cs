@@ -89,7 +89,7 @@ internal sealed class PinnedCaptureWindow : Forms.Form
         FormBorderStyle = Forms.FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = Forms.FormStartPosition.Manual; AutoScaleMode = Forms.AutoScaleMode.None;
         Bounds = new Rectangle((int)Math.Round(x), (int)Math.Round(y), Math.Max(38, (int)Math.Round(image.Width * zoom) + ShadowSize * 2), PinAreaHeight + Math.Max(1, (int)Math.Round(image.Height * zoom)) + ShadowSize);
-        Text = "SnapLine 贴图"; KeyPreview = true;
+        Text = App.DisplayName + " 贴图"; KeyPreview = true;
         tip = ThemeToolTips.Create(Words.T("重新挂回晾衣绳", "Return to line"));
         tip.Placement = System.Windows.Controls.Primitives.PlacementMode.AbsolutePoint;
         redraw.Tick += (_, _) => { redraw.Stop(); RenderFrame(); };
