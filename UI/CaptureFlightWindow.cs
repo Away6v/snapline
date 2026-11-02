@@ -26,6 +26,7 @@ internal sealed class CaptureFlightWindow : Window
     private readonly double endWidth;
     private readonly double endHeight;
     private readonly bool dropping;
+    private readonly bool textArrival;
     private readonly ScaleTransform scale = new();
     private readonly RotateTransform rotation = new();
     private readonly TranslateTransform travel = new();
@@ -36,10 +37,11 @@ internal sealed class CaptureFlightWindow : Window
     private IntPtr handle;
     internal Task Handoff => handoff.Task;
 
-    public CaptureFlightWindow(Forms.Screen screen, BitmapSource bitmap, double startX, double startY, double startWidth, double startHeight, double endX, double endY, double endWidth, double endHeight, bool dropping = false)
+    public CaptureFlightWindow(Forms.Screen screen, BitmapSource bitmap, double startX, double startY, double startWidth, double startHeight, double endX, double endY, double endWidth, double endHeight, bool dropping = false, bool completeCard = false, bool textArrival = false)
     {
         this.screen = screen;
         this.dropping = dropping;
+        this.textArrival = textArrival;
         this.startX = startX;
         this.startY = startY;
         this.startWidth = startWidth;
@@ -65,11 +67,15 @@ internal sealed class CaptureFlightWindow : Window
         if (dropping)
         {
             image.Opacity = 0;
-            image.CornerRadius = new CornerRadius(13);
-            image.Padding = new Thickness(7);
-            image.BorderThickness = new Thickness(1);
-            image.BorderBrush = AppTheme.Outline;
-            image.Background = AppTheme.Surface;
+            // 文本快照已包含完整卡面，避免重复添加底色、边框及内边距。
+            if (!completeCard)
+            {
+                image.CornerRadius = new CornerRadius(13);
+                image.Padding = new Thickness(7);
+                image.BorderThickness = new Thickness(1);
+                image.BorderBrush = AppTheme.Outline;
+                image.Background = AppTheme.Surface;
+            }
             image.Effect = new DropShadowEffect { BlurRadius = 12, ShadowDepth = 3, Opacity = 0.18 };
             rotation.CenterX = startWidth * 0.5;
             rotation.CenterY = startHeight * 0.3;
@@ -118,15 +124,18 @@ internal sealed class CaptureFlightWindow : Window
         else
         {
             var duration = TimeSpan.FromMilliseconds(560);
-            var handoffAnimation = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380));
+            var handoffAt = TimeSpan.FromMilliseconds(textArrival ? 560 : 380);
+            var handoffAnimation = new DoubleAnimation(0, 1, handoffAt);
             handoffAnimation.Completed += (_, _) => handoff.TrySetResult();
             handoffClock.BeginAnimation(TranslateTransform.XProperty, handoffAnimation);
-            var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+            IEasingFunction easing = textArrival
+                ? new SineEase { EasingMode = EasingMode.EaseInOut }
+                : new CubicEase { EasingMode = EasingMode.EaseOut };
             travel.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(startX, endX, duration) { EasingFunction = easing });
             travel.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(startY, endY, duration) { EasingFunction = easing });
             scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, endWidth / Math.Max(1, startWidth), duration) { EasingFunction = easing });
             scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, endHeight / Math.Max(1, startHeight), duration) { EasingFunction = easing });
-            var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(180)) { BeginTime = TimeSpan.FromMilliseconds(380) };
+            var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(180)) { BeginTime = handoffAt };
             fade.Completed += (_, _) => Close();
             image.BeginAnimation(OpacityProperty, fade);
         }

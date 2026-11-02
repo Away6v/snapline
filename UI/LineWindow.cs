@@ -14,6 +14,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
@@ -38,8 +39,12 @@ internal sealed class LineWindow : Window
     private readonly Dictionary<string, Grid> cardsById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Border> cardSurfacesById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Capture> capturesById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CaptureEditorWindow> captureEditors = new(StringComparer.Ordinal);
+    private readonly HashSet<string> openingCaptureEditors = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (ScaleTransform Scale, RotateTransform Tilt, TranslateTransform Shift, TranslateTransform Arrival)> transformsById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ImageSource?> thumbnailsById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> textContentsById = new(StringComparer.Ordinal);
+    private readonly HashSet<string> knownTextIds = new(StringComparer.Ordinal);
     private Grid? emptyCard;
     private bool animateEmptyCard;
     private readonly SmoothScroll smoothScroll;
@@ -83,6 +88,7 @@ internal sealed class LineWindow : Window
     private int showEpoch;
     private int visibleCount = 8;
     private long lastEdgeBlurUpdate;
+    private string searchQuery = "";
 
     public LineWindow(CaptureLibrary library, TextLibrary textLibrary, Preferences preferences, Action<string> notify)
     {
@@ -90,6 +96,7 @@ internal sealed class LineWindow : Window
         copyHintTimer.Tick += (_, _) => ClearCopyHint();
         copyBorderTimer.Tick += (_, _) => { copyBorderTimer.Stop(); ClearCopyBorder(); };
         knownCaptureIds.UnionWith(library.Items.Select(capture => capture.Id));
+        knownTextIds.UnionWith(textLibrary.Items.Select(entry => entry.Id));
         Title = "SnapLine"; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize;
         AllowsTransparency = true; Background = Brushes.Transparent; ShowInTaskbar = false; ShowActivated = false; Topmost = true;
         Height = 244; Width = 1000;
@@ -151,6 +158,16 @@ internal sealed class LineWindow : Window
         pinTransitions.Clear();
     }
     internal bool IsRevealed => revealed;
+    internal string SearchQuery => searchQuery;
+    internal void SetSearchQuery(string? query)
+    {
+        var normalized = (query ?? "").Trim();
+        if (searchQuery.Equals(normalized, StringComparison.Ordinal)) return;
+        searchQuery = normalized;
+        pendingAdditionIds.Clear();
+        pendingRemovalIds.Clear();
+        Rebuild(true);
+    }
     public void Toggle()
     {
         if (revealed) Conceal();
@@ -259,26 +276,41 @@ internal sealed class LineWindow : Window
         capturesById.Clear();
         transformsById.Clear();
         thumbnailsById.Clear();
+        textContentsById.Clear();
         hitTargets.Clear();
         cardContainers.Clear();
         emptyCard = null;
         Rebuild(true);
+        ShowForNewCapture();
     }
-    internal void CreateText()
+    private TextEntryWindow? activeTextDialog;
+    internal void CreateText() => ShowTextEntry(null, true);
+
+    private void ShowTextEntry(TextEntry? entry, bool editing)
     {
+        if (activeTextDialog != null)
+        {
+            if (activeTextDialog.WindowState == WindowState.Minimized) activeTextDialog.WindowState = WindowState.Normal;
+            activeTextDialog.Activate();
+            return;
+        }
         busy = true;
         try
         {
-            var dialog = new TextEntryWindow(null);
+            var dialog = new TextEntryWindow(entry, !editing);
+            activeTextDialog = dialog;
             if (IsVisible) dialog.Owner = this;
             else dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
             if (dialog.ShowDialog() != true || dialog.SavedText == null) return;
-            var entry = textLibrary.Add(dialog.SavedText);
-            if (entry == null) return;
-            SetDisplayMode("text");
-            if (!revealed) Toggle();
+            if (entry != null) textLibrary.Edit(entry, dialog.SavedText);
+            else
+            {
+                if (textLibrary.Add(dialog.SavedText) == null) return;
+                SetDisplayMode("text");
+                if (!revealed) Toggle();
+            }
         }
-        finally { FinishInteraction(); }
+        finally { activeTextDialog = null; FinishInteraction(); }
     }
     private void ApplyAppearance()
     {
@@ -289,19 +321,39 @@ internal sealed class LineWindow : Window
     {
         if (closing) return;
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(OnChanged); return; }
-        var currentIds = library.Items.Select(capture => capture.Id).ToHashSet(StringComparer.Ordinal);
-        pendingAdditionIds.UnionWith(currentIds.Except(knownCaptureIds));
-        pendingRemovalIds.UnionWith(knownCaptureIds.Except(currentIds));
-        // 合并同一轮中的相反操作，避免已恢复的卡片仍执行取下动画。
-        pendingRemovalIds.ExceptWith(currentIds);
-        pendingAdditionIds.RemoveWhere(id => !currentIds.Contains(id));
-        knownCaptureIds.Clear();
-        knownCaptureIds.UnionWith(currentIds);
-        if (pendingAdditionIds.Count > 0 && preferences.DisplayMode == "screenshot") ShowForNewCapture();
+        TrackChanges(CurrentCardIds, knownCaptureIds, preferences.DisplayMode == "screenshot");
         if (preferences.DisplayMode != "screenshot") return;
+        if (pendingAdditionIds.Count > 0) ShowForNewCapture();
+        QueueLibraryUpdate();
+    }
+    private void OnTextChanged()
+    {
+        if (closing) return;
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(OnTextChanged); return; }
+        TrackChanges(CurrentCardIds, knownTextIds, preferences.DisplayMode == "text");
+        if (preferences.DisplayMode != "text") return;
+        if (pendingAdditionIds.Count > 0) ShowForNewCapture();
+        QueueLibraryUpdate();
+    }
+    private void TrackChanges(IEnumerable<string> ids, HashSet<string> knownIds, bool active)
+    {
+        var currentIds = ids.ToHashSet(StringComparer.Ordinal);
+        if (active)
+        {
+            pendingAdditionIds.UnionWith(currentIds.Except(knownIds));
+            pendingRemovalIds.UnionWith(knownIds.Except(currentIds));
+            // 合并同一轮中的相反操作，后台模式的变化不干扰当前卡片。
+            pendingRemovalIds.ExceptWith(currentIds);
+            pendingAdditionIds.RemoveWhere(id => !currentIds.Contains(id));
+        }
+        knownIds.Clear();
+        knownIds.UnionWith(currentIds);
+    }
+    private void QueueLibraryUpdate()
+    {
         if (busy || removalAnimationRunning) { dirty = true; return; }
         if (libraryUpdateQueued) return;
-        // 合并同一轮消息中的变化，避免连续导入反复中断排位动画。
+        // 文本和截图共用更新队列，交互结束后统一执行移除及补位动画。
         libraryUpdateQueued = true;
         Dispatcher.BeginInvoke(() =>
         {
@@ -312,12 +364,9 @@ internal sealed class LineWindow : Window
             ProcessLibraryChanges();
         }, DispatcherPriority.Render);
     }
-    private void OnTextChanged()
-    {
-        if (closing) return;
-        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(OnTextChanged); return; }
-        if (preferences.DisplayMode == "text") Rebuild(true);
-    }
+    private IEnumerable<string> CurrentCardIds => preferences.DisplayMode == "text"
+        ? textLibrary.Items.Where(entry => string.IsNullOrWhiteSpace(searchQuery) || entry.Text.Contains(searchQuery, StringComparison.CurrentCultureIgnoreCase)).Select(entry => entry.Id)
+        : library.Items.Where(capture => string.IsNullOrWhiteSpace(searchQuery) || System.IO.Path.GetFileName(capture.Path).Contains(searchQuery, StringComparison.CurrentCultureIgnoreCase)).Select(capture => capture.Id);
     private void FinishInteraction()
     {
         busy = removalAnimationRunning;
@@ -382,7 +431,9 @@ internal sealed class LineWindow : Window
                     container.Opacity = 0;
                     continue;
                 }
-                var bitmap = capturesById[id].Thumbnail ?? throw new InvalidOperationException("Thumbnail is unavailable.");
+                var isText = textContentsById.ContainsKey(id);
+                var bitmap = isText ? RenderTextCard(card)
+                    : capturesById[id].Thumbnail ?? throw new InvalidOperationException("Thumbnail is unavailable.");
                 var start = card.TransformToVisual(this).TransformBounds(new Rect(card.RenderSize));
                 var targetScreen = screen ?? Forms.Screen.PrimaryScreen!;
                 var monitorScale = Native.Scale(targetScreen);
@@ -395,7 +446,7 @@ internal sealed class LineWindow : Window
                         (target.Left - targetScreen.Bounds.Left) / monitorScale, (target.Top - targetScreen.Bounds.Top) / monitorScale,
                         target.Width / monitorScale, target.Height / monitorScale)
                     : new CaptureFlightWindow(targetScreen, bitmap, start.X, start.Y, start.Width, start.Height,
-                        start.X, endY, start.Width, start.Height, true);
+                        start.X, endY, start.Width, start.Height, true, isText);
                 flights.Add(flight.PlayAsync());
                 if (isPin)
                 {
@@ -439,32 +490,32 @@ internal sealed class LineWindow : Window
             CaptureSurvivorPositions();
             ProcessLibraryChanges();
         }
-        else if (changedDuringFlight || library.Items.Count == 0) ProcessLibraryChanges();
+        else if (changedDuringFlight || !CurrentCardIds.Any()) ProcessLibraryChanges();
     }
     private void CaptureSurvivorPositions()
     {
         pendingReflowPositions.Clear();
-        foreach (var capture in library.Items)
+        foreach (var id in CurrentCardIds)
         {
-            if (!cardsById.TryGetValue(capture.Id, out var container) || !container.IsLoaded) continue;
-            try { pendingReflowPositions[capture.Id] = container.TranslatePoint(new Point(container.ActualWidth / 2, container.ActualHeight * 0.04), root); }
+            if (!cardsById.TryGetValue(id, out var container) || !container.IsLoaded) continue;
+            try { pendingReflowPositions[id] = container.TranslatePoint(new Point(container.ActualWidth / 2, container.ActualHeight * 0.04), root); }
             catch (InvalidOperationException) { }
         }
     }
     private void Rebuild(bool refreshAppearance = false)
     {
         if (closing) return;
-        if (preferences.DisplayMode == "text")
-        {
-            RebuildText();
-            return;
-        }
+        var textMode = preferences.DisplayMode == "text";
+        var currentTexts = textLibrary.Items.ToDictionary(entry => entry.Id, StringComparer.Ordinal);
+        var currentIds = CurrentCardIds.ToArray();
         var currentCaptures = library.Items.ToDictionary(capture => capture.Id, StringComparer.Ordinal);
         // 无实际内容变化时保留所有动画，包括尚未结束的排位过渡。
-        if (!refreshAppearance && currentCaptures.Count == cardsById.Count
-            && (currentCaptures.Count > 0 || emptyCard != null)
-            && currentCaptures.All(entry => thumbnailsById.TryGetValue(entry.Key, out var thumbnail)
-                && ReferenceEquals(thumbnail, entry.Value.Thumbnail)))
+        bool CardUnchanged(string id) => textMode
+            ? currentTexts.TryGetValue(id, out var entry) && textContentsById.TryGetValue(id, out var text) && text == entry.Text
+            : currentCaptures.TryGetValue(id, out var capture) && thumbnailsById.TryGetValue(id, out var thumbnail)
+                && ReferenceEquals(thumbnail, capture.Thumbnail);
+        if (!refreshAppearance && currentIds.Length == cardsById.Count
+            && (currentIds.Length > 0 || emptyCard != null) && currentIds.All(CardUnchanged))
         {
             pendingAdditionIds.Clear();
             pendingReflowPositions.Clear();
@@ -479,8 +530,7 @@ internal sealed class LineWindow : Window
         // 只移除失效的卡片，保留其余元素和正在运行的摇曳时钟。
         foreach (var id in cardsById.Keys.ToArray())
         {
-            if (!refreshAppearance && currentCaptures.TryGetValue(id, out var capture)
-                && ReferenceEquals(thumbnailsById[id], capture.Thumbnail)) continue;
+            if (!refreshAppearance && CardUnchanged(id)) continue;
             var retired = cardsById[id];
             hitTargets.RemoveAll(target => target.IsDescendantOf(retired));
             cards.Children.Remove(retired);
@@ -489,8 +539,9 @@ internal sealed class LineWindow : Window
             capturesById.Remove(id);
             transformsById.Remove(id);
             thumbnailsById.Remove(id);
+            textContentsById.Remove(id);
         }
-        if (emptyCard != null && (library.Items.Count > 0 || refreshAppearance))
+        if (emptyCard != null && (currentIds.Length > 0 || refreshAppearance))
         {
             cards.Children.Remove(emptyCard);
             emptyCard = null;
@@ -502,9 +553,9 @@ internal sealed class LineWindow : Window
             transforms.Shift.X = transforms.Shift.Y = 0;
         }
         var foreground = AppTheme.Ink;
-        if (library.Items.Count == 0 && emptyCard == null && !removalAnimationRunning)
+        if (currentIds.Length == 0 && emptyCard == null && !removalAnimationRunning)
         {
-            emptyCard = (Grid)MakeEmptyCard(foreground);
+            emptyCard = textMode ? MakeEmptyTextCard(foreground) : (Grid)MakeEmptyCard(foreground);
             cards.Children.Add(emptyCard);
             if (animateEmptyCard)
             {
@@ -520,15 +571,15 @@ internal sealed class LineWindow : Window
                 animateEmptyCard = false;
             }
         }
-        for (var index = 0; index < library.Items.Count; index++)
+        for (var index = 0; index < currentIds.Length; index++)
         {
-            var capture = library.Items[index];
-            if (cardsById.ContainsKey(capture.Id)) continue;
-            cards.Children.Insert(index, MakeCard(capture, foreground));
+            var id = currentIds[index];
+            if (cardsById.ContainsKey(id)) continue;
+            cards.Children.Insert(index, textMode ? MakeTextCard(currentTexts[id], foreground) : MakeCard(currentCaptures[id], foreground));
         }
         cardContainers.Clear();
         cardContainers.AddRange(cards.Children.OfType<Grid>());
-        var returned = library.Items.FirstOrDefault(capture => capture.ReturningToLine);
+        var returned = textMode ? null : library.Items.FirstOrDefault(capture => capture.ReturningToLine);
         var scrollToNewest = pendingAdditionIds.Count > 0 && returned == null;
         pendingAdditionIds.Clear();
         // 在同一轮布局中完成移除、居中和位移补偿，避免先闪到终点再开始动画。
@@ -546,61 +597,92 @@ internal sealed class LineWindow : Window
         if (!scrollToNewest && returned == null) smoothScroll.ResumeAfterLayout(remainingScroll);
         AnimateReflowPositions(previousPositions);
     }
-    private void RebuildText()
+    private Grid MakeEmptyTextCard(Brush foreground)
     {
-        if (closing) return;
-        cards.Children.Clear();
-        cardsById.Clear();
-        cardSurfacesById.Clear();
-        capturesById.Clear();
-        transformsById.Clear();
-        thumbnailsById.Clear();
-        hitTargets.Clear();
-        cardContainers.Clear();
-        emptyCard = null;
-        var foreground = AppTheme.Ink;
-        if (textLibrary.Items.Count == 0)
+        var empty = new Border
         {
-            var empty = new Border
+            Width = 240, Height = 104,
+            Padding = new Thickness(16), CornerRadius = new CornerRadius(10),
+            Background = LineAppearance.CardSurface(preferences.Appearance),
+            BorderBrush = LineAppearance.CardOutline(preferences.Appearance), BorderThickness = new Thickness(1),
+            Margin = new Thickness(6, LineAppearance.CardTop, 6, 0),
+            Child = new StackPanel
             {
-                Width = 240, Height = 104,
-                Padding = new Thickness(16), CornerRadius = new CornerRadius(10),
-                Background = LineAppearance.CardSurface(preferences.Appearance),
-                BorderBrush = LineAppearance.CardOutline(preferences.Appearance), BorderThickness = new Thickness(1),
-                Margin = new Thickness(6, LineAppearance.CardTop, 6, 0),
-                Child = new StackPanel
+                Children =
                 {
-                    Children =
-                    {
-                        new TextBlock { Text = Words.T("晾衣绳还是空的", "Your text line is empty"), Foreground = foreground, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 8) },
-                        new Button { Content = Words.T("＋ 新建文本", "＋ New text"), Style = ThemeButtons.Primary, Padding = new Thickness(14, 6, 14, 6), HorizontalAlignment = HorizontalAlignment.Center }
-                    }
+                    new TextBlock { Text = Words.T("晾衣绳还是空的", "Your text line is empty"), Foreground = foreground, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 8) },
+                    new Button { Content = Words.T("＋ 新建文本", "＋ New text"), Style = ThemeButtons.Primary, Padding = new Thickness(14, 6, 14, 6), HorizontalAlignment = HorizontalAlignment.Center }
                 }
-            };
-            empty.Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.12 };
-            var create = (Button)((StackPanel)empty.Child).Children[1];
-            create.Click += (_, _) => CreateText();
-            hitTargets.Add(create);
-            var holder = new Grid { Width = 252, Height = 148, Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Top };
-            AddEdgeBlurCard(holder, empty);
-            holder.Children.Add(LineAppearance.Peg(preferences.Appearance));
-            cards.Children.Add(holder);
-            cardContainers.Add(holder);
-        }
-        else
-        {
-            foreach (var entry in textLibrary.Items)
-                cards.Children.Add(MakeTextCard(entry, foreground));
-        }
-        UpdateCardHostWidth();
-        root.UpdateLayout();
-        UpdateCardPositions();
-        scroll.ScrollToRightEnd();
+            }
+        };
+        empty.Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.12 };
+        var create = (Button)((StackPanel)empty.Child).Children[1];
+        create.Click += (_, _) => CreateText();
+        hitTargets.Add(create);
+        var holder = new Grid { Width = 252, Height = 148, Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Top };
+        AddEdgeBlurCard(holder, empty);
+        holder.Children.Add(LineAppearance.Peg(preferences.Appearance));
+        return holder;
+    }
+    private static BitmapSource RenderTextCard(Border card)
+    {
+        // 捕获文本卡片本身，复用截图下落轨迹，同时保留文字、底色和边框。
+        var dpi = VisualTreeHelper.GetDpi(card);
+        var bitmap = new RenderTargetBitmap(Math.Max(1, (int)Math.Ceiling(card.ActualWidth * dpi.DpiScaleX)),
+            Math.Max(1, (int)Math.Ceiling(card.ActualHeight * dpi.DpiScaleY)), dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+        var visual = new DrawingVisual();
+        using (var drawing = visual.RenderOpen())
+            drawing.DrawRectangle(new VisualBrush(card) { Stretch = Stretch.Fill }, null, new Rect(card.RenderSize));
+        bitmap.Render(visual);
+        bitmap.Freeze();
+        return bitmap;
     }
     private Grid MakeTextCard(TextEntry entry, Brush foreground)
     {
         var index = LineAppearance.PaletteIndex(entry.Id);
         var container = new Grid { MinWidth = 42, Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Top };
+        var scale = new ScaleTransform(1, 1);
+        var tilt = new RotateTransform((entry.Id[0] % 5) - 2);
+        var shift = new TranslateTransform();
+        var arrival = new TranslateTransform();
+        var transforms = new TransformGroup();
+        transforms.Children.Add(scale);
+        transforms.Children.Add(tilt);
+        transforms.Children.Add(arrival);
+        transforms.Children.Add(shift);
+        container.RenderTransformOrigin = new Point(0.5, 0.04);
+        container.RenderTransform = transforms;
+        cardsById[entry.Id] = container;
+        transformsById[entry.Id] = (scale, tilt, shift, arrival);
+        textContentsById[entry.Id] = entry.Text;
+        Border? border = null;
+        var animateEntry = pendingAdditionIds.Contains(entry.Id) && SystemParameters.ClientAreaAnimation;
+        if (animateEntry) container.Opacity = 0;
+        var entryStarted = false;
+        container.Loaded += (_, _) =>
+        {
+            if (entryStarted) return;
+            entryStarted = true;
+            QueueCardPositionUpdate();
+            StartSway(tilt, entry.Id);
+            if (!animateEntry) return;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!IsCurrentCard(entry.Id, container)) return;
+                if (entry.AnimationOrigin is System.Drawing.Point origin && screen != null)
+                {
+                    entry.AnimationOrigin = null;
+                    _ = AnimateTextArrivalAsync(container, border!, entry.Id, scale, origin, screen);
+                    return;
+                }
+                arrival.Y = 18;
+                scale.ScaleX = scale.ScaleY = 0.94;
+                Animate(arrival, TranslateTransform.YProperty, 0, 360);
+                Animate(scale, ScaleTransform.ScaleXProperty, 1, 360);
+                Animate(scale, ScaleTransform.ScaleYProperty, 1, 360);
+                Animate(container, OpacityProperty, 1, 220);
+            }, DispatcherPriority.Loaded);
+        };
         var cardStyle = new Style(typeof(Border));
         cardStyle.Setters.Add(new Setter(Border.BorderBrushProperty, LineAppearance.CardOutline(preferences.Appearance)));
         var cardHover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
@@ -613,7 +695,7 @@ internal sealed class LineWindow : Window
             TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis,
             MaxWidth = 214, MaxHeight = 120
         };
-        var border = new Border
+        border = new Border
         {
             Margin = new Thickness(0, LineAppearance.CardTop, 0, 0),
             Padding = new Thickness(12), CornerRadius = new CornerRadius(10),
@@ -623,6 +705,7 @@ internal sealed class LineWindow : Window
             Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.12 },
             Child = text, Cursor = Cursors.Hand
         };
+        cardSurfacesById[entry.Id] = border;
         AddEdgeBlurCard(container, border, true);
         var peg = LineAppearance.Peg(preferences.Appearance, index);
         container.Children.Add(peg);
@@ -677,6 +760,7 @@ internal sealed class LineWindow : Window
             if (!consumed && new Rect(border.RenderSize).Contains(e.GetPosition(border))) CopyCard();
             FinishInteraction(); e.Handled = true;
         };
+        border.MouseLeave += (_, _) => { if (pressed && Mouse.LeftButton != MouseButtonState.Pressed) { pressed = false; hold.Stop(); FinishInteraction(); } };
         border.LostMouseCapture += (_, _) => { if (pressed) { pressed = false; hold.Stop(); FinishInteraction(); } };
         var remove = CreateRemoveButton();
         container.Children.Add(remove);
@@ -690,8 +774,19 @@ internal sealed class LineWindow : Window
         container.MouseEnter += (_, _) => ShowRemove(true);
         container.MouseLeave += (_, _) => ShowRemove(remove.IsKeyboardFocusWithin);
         remove.IsKeyboardFocusWithinChanged += (_, _) => ShowRemove(container.IsMouseOver || remove.IsKeyboardFocusWithin);
-        container.Loaded += (_, _) => QueueCardPositionUpdate();
-        container.Unloaded += (_, _) => { hold.Stop(); if (ReferenceEquals(copyHintContainer, container)) ClearCopyHint(); };
+        container.Unloaded += (_, _) =>
+        {
+            hold.Stop();
+            if (ReferenceEquals(copyHintContainer, container)) ClearCopyHint();
+            tilt.BeginAnimation(RotateTransform.AngleProperty, null);
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            shift.BeginAnimation(TranslateTransform.XProperty, null);
+            shift.BeginAnimation(TranslateTransform.YProperty, null);
+            arrival.BeginAnimation(TranslateTransform.XProperty, null);
+            arrival.BeginAnimation(TranslateTransform.YProperty, null);
+            container.BeginAnimation(OpacityProperty, null);
+        };
         return container;
     }
     private void AddEdgeBlurCard(Grid container, Border card, bool dockEffect = false)
@@ -841,14 +936,8 @@ internal sealed class LineWindow : Window
             FocusVisualStyle = null,
             Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 5, ShadowDepth = 1, Opacity = 0.14 }
         };
-        var removeIcon = new System.Windows.Shapes.Path
-        {
-            Data = Geometry.Parse("M 3,3 L 11,11 M 11,3 L 3,11"),
-            Width = 10, Height = 10, Stretch = Stretch.Uniform, StrokeThickness = 1.6,
-            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
-            StrokeLineJoin = PenLineJoin.Round
-        };
-        removeIcon.SetBinding(System.Windows.Shapes.Shape.StrokeProperty, new Binding(nameof(Control.Foreground)) { RelativeSource = new RelativeSource(RelativeSourceMode.FindAncestor, typeof(Button), 1) });
+        var removeIcon = new LucideIcon("x", AppTheme.Muted, 14);
+        removeIcon.SetBinding(LucideIcon.StrokeProperty, new Binding(nameof(Control.Foreground)) { RelativeSource = new RelativeSource(RelativeSourceMode.FindAncestor, typeof(Button), 1) });
         remove.Content = removeIcon;
         var removeStyle = new Style(typeof(Button));
         removeStyle.Setters.Add(new Setter(Control.ForegroundProperty, AppTheme.Muted));
@@ -936,12 +1025,7 @@ internal sealed class LineWindow : Window
         data.SetData("SnapLine.Copy", "1");
         Clipboard.SetDataObject(data, true);
     }
-    private void OpenText(TextEntry? entry, bool editing)
-    {
-        var dialog = new TextEntryWindow(entry, !editing) { Owner = this };
-        if (dialog.ShowDialog() == true && entry != null && dialog.SavedText != null) textLibrary.Edit(entry, dialog.SavedText);
-        FinishInteraction();
-    }
+    private void OpenText(TextEntry? entry, bool editing) => ShowTextEntry(entry, editing);
     private FrameworkElement MakeEmptyCard(Brush foreground)
     {
         var container = new Grid
@@ -1009,7 +1093,7 @@ internal sealed class LineWindow : Window
             if (entryStarted) return;
             entryStarted = true;
             QueueCardPositionUpdate();
-            StartSway(tilt, capture);
+            StartSway(tilt, capture.Id);
             if (!animateEntry) return;
             Dispatcher.BeginInvoke(() =>
             {
@@ -1079,24 +1163,51 @@ internal sealed class LineWindow : Window
         {
             if (!peg.IsEnabled) return;
             peg.IsEnabled = false;
+            PinnedCaptureWindow? pinned = null;
+            string? recovery = null;
+            var taken = false;
             try
             {
                 var bitmap = await Task.Run(() => PinnedCaptureWindow.PrepareImage(CaptureLibrary.LoadFull(capture.Path)));
                 if (!IsCurrentCard(capture.Id, container)) { bitmap.Dispose(); return; }
                 var target = screen ?? Forms.Screen.FromPoint(Forms.Cursor.Position);
-                var pinned = new PinnedCaptureWindow(bitmap, target, capture, library, notify);
+                pinned = new PinnedCaptureWindow(bitmap, target, capture, library, notify);
                 // 在飞行动画开始前准备贴图画面，淡入期间只提交透明度。
                 pinned.PrepareFrame();
                 var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 pinTransitions[capture.Id] = (pinned.ImageBounds, started);
-                if (!await library.TakeOffAsync(capture)) { pinTransitions.Remove(capture.Id); pinned.Dispose(); return; }
+                recovery = library.BeginRecovery(capture);
+                if (!await library.TakeOffAsync(capture)) { library.CompleteRecovery(recovery); pinTransitions.Remove(capture.Id); pinned.Dispose(); return; }
+                taken = true;
                 var completed = await Task.WhenAny(started.Task, Task.Delay(5000));
                 var animate = completed == started.Task && await started.Task;
                 if (!animate) pinTransitions.Remove(capture.Id);
                 if (closing) { pinned.Dispose(); return; }
                 pinned.ShowWithFade(animate);
+                if (!library.CompleteRecovery(recovery))
+                {
+                    var bounds = pinned.ImageBounds;
+                    pinned.Close();
+                    if (await library.ReturnAsync(capture, bounds)) library.CompleteRecovery(recovery);
+                }
             }
-            catch (Exception ex) { notify(Words.T("无法钉住图片：", "Cannot pin image: ") + ex.Message); }
+            catch (Exception ex)
+            {
+                pinTransitions.Remove(capture.Id);
+                if (taken && !closing && pinned != null)
+                {
+                    var bounds = pinned.ImageBounds;
+                    pinned.Dispose();
+                    pinned = null;
+                    if (await library.ReturnAsync(capture, bounds) && recovery != null) library.CompleteRecovery(recovery);
+                }
+                else
+                {
+                    pinned?.Dispose();
+                    if (!taken && recovery != null) library.CompleteRecovery(recovery);
+                }
+                notify(Words.T("无法钉住图片：", "Cannot pin image: ") + ex.Message);
+            }
             finally { peg.IsEnabled = true; }
         }
         peg.MouseLeftButtonDown += async (_, e) => { e.Handled = true; await PinToScreenAsync(); };
@@ -1114,8 +1225,13 @@ internal sealed class LineWindow : Window
         Add("复制图片", "Copy image", "⧉", () => _ = CopyCardAsync());
         Add("预览", "Preview", "preview", () => Preview(capture));
         Add("钉在屏幕", "Pin to screen", "pin", () => _ = PinToScreenAsync());
-        Add("用默认应用打开", "Open with default app", "open", () => Open(capture.Path));
-        Add("用画图编辑副本", "Edit in Paint", "✎", () => _ = EditAsync(capture));
+        Add("用默认应用打开", "Open with default app", "open", () =>
+        {
+            menu.IsOpen = false;
+            FinishInteraction();
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => Open(capture.Path)));
+        });
+        Add("编辑", "Edit", "✎", () => _ = EditAsync(capture));
         Add("另存为…", "Save as…", "save", () => SaveAs(capture));
         Add("在文件夹中显示", "Show in folder", "folder", () => RevealFile(capture));
         menu.Items.Add(WarmCardMenu.Separator());
@@ -1134,7 +1250,13 @@ internal sealed class LineWindow : Window
             if (e.OriginalSource is DependencyObject target && IsButton(target)) return;
             pressed = true; consumed = false; start = e.GetPosition(card); busy = true;
             card.CaptureMouse();
-            if (e.ClickCount == 2) { hold.Stop(); consumed = true; Open(capture.Path); }
+            if (e.ClickCount == 2)
+            {
+                hold.Stop(); consumed = true; pressed = false;
+                card.ReleaseMouseCapture();
+                FinishInteraction();
+                Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => Open(capture.Path)));
+            }
             else hold.Start();
             e.Handled = true;
         };
@@ -1151,7 +1273,7 @@ internal sealed class LineWindow : Window
                 data.SetData("Preferred DropEffect", new MemoryStream(BitConverter.GetBytes(1)));
                 var result = DragDrop.DoDragDrop(card, data, DragDropEffects.Copy | DragDropEffects.Move);
                 // Windows 文件管理器负责实际移动；只有源文件确实消失才移除。
-                if ((result & DragDropEffects.Move) != 0) _ = PruneAfterDragAsync();
+                if ((result & DragDropEffects.Move) != 0) _ = PruneAfterDragAsync(capture);
             }
             catch (Exception ex) { notify(Words.T("拖放失败：", "Drag failed: ") + ex.Message); }
             finally { FinishInteraction(); }
@@ -1174,6 +1296,44 @@ internal sealed class LineWindow : Window
         };
 
         return container;
+    }
+    private async Task AnimateTextArrivalAsync(Grid container, Border card, string id, ScaleTransform scale, System.Drawing.Point origin, Forms.Screen targetScreen)
+    {
+        try
+        {
+            var bitmap = RenderTextCard(card);
+            // 使用展开后的固定目标，避免绳子展开时飞行终点随窗口滑动。
+            var target = card.TransformToVisual(root).TransformBounds(new Rect(card.RenderSize));
+            target.Y += LineOffsetY;
+            var monitorScale = Native.Scale(targetScreen);
+            var screenWidth = targetScreen.Bounds.Width / monitorScale;
+            var startWidth = Math.Min(target.Width, screenWidth * 0.82);
+            var startHeight = target.Height * startWidth / Math.Max(1, target.Width);
+            var pointerX = (origin.X - targetScreen.Bounds.Left) / monitorScale;
+            var pointerY = (origin.Y - targetScreen.Bounds.Top) / monitorScale;
+            var startX = pointerX - startWidth / 2;
+            var startY = pointerY - startHeight / 2;
+            // 使用复制时的鼠标位置作为起点，飞行结束后与绳上的卡片交接。
+            var flight = new CaptureFlightWindow(targetScreen, bitmap, startX, startY, startWidth, startHeight,
+                target.X, target.Y, target.Width, target.Height, textArrival: true);
+            var animation = flight.PlayAsync();
+            await flight.Handoff;
+            if (!IsCurrentCard(id, container)) { await animation; return; }
+            scale.ScaleX = scale.ScaleY = 0.96;
+            Animate(scale, ScaleTransform.ScaleXProperty, 1, 200);
+            Animate(scale, ScaleTransform.ScaleYProperty, 1, 200);
+            Animate(container, OpacityProperty, 1, 180);
+            await animation;
+        }
+        catch
+        {
+            if (!IsCurrentCard(id, container)) return;
+            container.BeginAnimation(OpacityProperty, null);
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            scale.ScaleX = scale.ScaleY = 1;
+            container.Opacity = 1;
+        }
     }
     private async Task AnimateCaptureArrivalAsync(Grid container, Capture capture, ScaleTransform scale, RotateTransform tilt, Point targetCenter, double targetWidth, double targetHeight, System.Drawing.Point origin, Forms.Screen targetScreen)
     {
@@ -1226,13 +1386,13 @@ internal sealed class LineWindow : Window
             container.Opacity = 1;
         }
     }
-    private static void StartSway(RotateTransform tilt, Capture capture)
+    private static void StartSway(RotateTransform tilt, string id)
     {
         if (!SystemParameters.ClientAreaAnimation || tilt.HasAnimatedProperties) return;
-        var center = (capture.Id[0] % 5) - 2;
-        var amplitude = 1.5 + capture.Id[2] % 5 * 0.16;
-        var period = TimeSpan.FromSeconds(7.6 + capture.Id[1] % 5 * 0.55);
-        var direction = capture.Id[3] % 2 == 0 ? 1 : -1;
+        var center = (id[0] % 5) - 2;
+        var amplitude = 1.5 + id[2] % 5 * 0.16;
+        var period = TimeSpan.FromSeconds(7.6 + id[1] % 5 * 0.55);
+        var direction = id[3] % 2 == 0 ? 1 : -1;
         // 从当前角度开始闭合循环，不在首帧跳到极值；不同卡片保留各自节奏。
         var sway = new DoubleAnimationUsingKeyFrames { Duration = period, RepeatBehavior = RepeatBehavior.Forever };
         sway.KeyFrames.Add(new LinearDoubleKeyFrame(tilt.Angle, KeyTime.FromPercent(0)));
@@ -1241,7 +1401,7 @@ internal sealed class LineWindow : Window
         sway.KeyFrames.Add(new EasingDoubleKeyFrame(center, KeyTime.FromPercent(1), new SineEase { EasingMode = EasingMode.EaseIn }));
         tilt.BeginAnimation(RotateTransform.AngleProperty, sway);
     }
-    private bool IsCurrentCard(string id, Grid container) => !closing && cardsById.TryGetValue(id, out var current) && ReferenceEquals(current, container) && library.Items.Any(capture => capture.Id == id);
+    private bool IsCurrentCard(string id, Grid container) => !closing && cardsById.TryGetValue(id, out var current) && ReferenceEquals(current, container) && CurrentCardIds.Contains(id, StringComparer.Ordinal);
 
     private static DoubleAnimation Transition(double from, double to, double milliseconds) => new(from, to,
         TimeSpan.FromMilliseconds(SystemParameters.ClientAreaAnimation ? milliseconds : 0))
@@ -1380,7 +1540,7 @@ internal sealed class LineWindow : Window
         while (target != null) { if (target is Button) return true; target = VisualTreeHelper.GetParent(target); }
         return false;
     }
-    private async Task PruneAfterDragAsync() { await Task.Delay(700); library.Prune(); }
+    private async Task PruneAfterDragAsync(Capture capture) { await Task.Delay(700); await library.ConfirmMovedAsync(capture); }
     private static async Task CopyToClipboardAsync(Capture capture, Func<bool> isCurrent)
     {
         var (bitmap, pngBytes) = await Task.Run(() =>
@@ -1409,10 +1569,27 @@ internal sealed class LineWindow : Window
     }
     private async Task EditAsync(Capture capture)
     {
-        var path = await library.EditablePathAsync(capture);
-        if (path == null) return;
-        try { Process.Start(new ProcessStartInfo("mspaint.exe") { UseShellExecute = true, ArgumentList = { path } }); }
-        catch (Exception ex) { notify(Words.T("无法启动 Windows 画图，请确认已安装：", "Cannot start Windows Paint. Check that it is installed: ") + ex.Message); }
+        if (captureEditors.TryGetValue(capture.Id, out var existing))
+        {
+            if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
+            existing.Topmost = true;
+            existing.Topmost = false;
+            existing.Activate();
+            return;
+        }
+        if (!openingCaptureEditors.Add(capture.Id)) return;
+        try
+        {
+            var bitmap = await Task.Run(() => CaptureLibrary.LoadFull(capture.Path));
+            if (closing) return;
+            var editor = new CaptureEditorWindow(library, capture, bitmap);
+            captureEditors.Add(capture.Id, editor);
+            editor.Closed += (_, _) => captureEditors.Remove(capture.Id);
+            try { editor.Topmost = true; editor.Show(); editor.Topmost = false; editor.Activate(); }
+            catch { captureEditors.Remove(capture.Id); throw; }
+        }
+        catch (Exception ex) { notify(Words.T("无法打开图片编辑器：", "Cannot open image editor: ") + ex.Message); }
+        finally { openingCaptureEditors.Remove(capture.Id); }
     }
     private void RevealFile(Capture capture)
     {

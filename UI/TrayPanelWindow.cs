@@ -50,6 +50,10 @@ internal sealed class TrayPanelWindow : Window
     private readonly Action createText;
     private readonly Action checkUpdates;
     private readonly Action installUpdate;
+    private readonly Func<string> getSearch;
+    private readonly Action<string> setSearch;
+    private readonly Action exportBackup;
+    private readonly Action restoreBackup;
     private readonly UpdateStatus updateStatus;
     private readonly ScrollViewer scroll;
     private readonly ContentControl header = new();
@@ -66,11 +70,11 @@ internal sealed class TrayPanelWindow : Window
     private double maximumHeight = 560;
     private System.Drawing.Point? anchor;
 
-    private enum Page { Home, Folders, Appearance, Language, Shortcut }
+    private enum Page { Home, Folders, Appearance, Language, Shortcut, Search, Backup }
 
     internal TrayPanelWindow(Preferences preferences, Func<int> captureCount, Func<int> textCount, Func<Capture[]> previewCaptures, Func<bool> lineVisible,
         Action toggleLine, Action openInbox, Action exit, Func<bool, uint, uint, bool> registerShortcut,
-        Func<bool, bool, Task> savePreferences, Action<string> setDisplayMode, Action createText, UpdateStatus updateStatus, Action checkUpdates, Action installUpdate)
+        Func<bool, bool, Task> savePreferences, Action<string> setDisplayMode, Action createText, UpdateStatus updateStatus, Action checkUpdates, Action installUpdate, Func<string> getSearch, Action<string> setSearch, Action exportBackup, Action restoreBackup)
     {
         this.preferences = preferences;
         settingsMode = preferences.DisplayMode;
@@ -87,6 +91,10 @@ internal sealed class TrayPanelWindow : Window
         this.createText = createText;
         this.checkUpdates = checkUpdates;
         this.installUpdate = installUpdate;
+        this.getSearch = getSearch;
+        this.setSearch = setSearch;
+        this.exportBackup = exportBackup;
+        this.restoreBackup = restoreBackup;
         this.updateStatus = updateStatus;
         Title = "SnapLine";
         Width = 360;
@@ -119,7 +127,17 @@ internal sealed class TrayPanelWindow : Window
             Background = Brushes.Transparent
         };
         smoothScroll = new SmoothScroll(scroll, false);
-        Closed += (_, _) => smoothScroll.Stop();
+        var pauseTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        var lastPaused = IsCollectionPaused();
+        pauseTimer.Tick += (_, _) =>
+        {
+            var paused = IsCollectionPaused();
+            if (paused == lastPaused) return;
+            lastPaused = paused;
+            if (currentPage == Page.Home) Navigate(Page.Home);
+        };
+        pauseTimer.Start();
+        Closed += (_, _) => { smoothScroll.Stop(); pauseTimer.Stop(); };
         // 顶部品牌和底部退出操作独立于滚动区域，窗口受限时只滚动中间内容。
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -195,6 +213,8 @@ internal sealed class TrayPanelWindow : Window
             Page.Folders => Folders(),
             Page.Appearance => AppearancePage(),
             Page.Language => LanguagePage(),
+            Page.Search => SearchPage(),
+            Page.Backup => BackupPage(),
             _ => Shortcut()
         };
         smoothScroll.Stop();
@@ -267,6 +287,8 @@ internal sealed class TrayPanelWindow : Window
             Page.Folders => Words.T("监控目录", "Watched folders"),
             Page.Appearance => Words.T("外观", "Appearance"),
             Page.Language => Words.T("界面语言", "Language"),
+            Page.Search => Words.T("搜索", "Search"),
+            Page.Backup => Words.T("备份", "Backup"),
             _ => Words.T("快捷键设置", "Keyboard shortcuts")
         };
         var bar = new Grid { Margin = new Thickness(0, 0, 0, 10) };
@@ -279,15 +301,7 @@ internal sealed class TrayPanelWindow : Window
             Width = 36,
             Height = 36,
             Padding = new Thickness(0),
-            Content = new TextBlock
-            {
-                Text = "↩",
-                FontFamily = new FontFamily("Segoe UI Symbol"),
-                FontSize = 21,
-                Foreground = Ink,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            }
+            Content = new LucideIcon("undo-2", Ink, 20)
         };
         System.Windows.Automation.AutomationProperties.SetName(back, Words.T("返回", "Back"));
         back.Click += (_, _) => Navigate(Page.Home);
@@ -304,12 +318,13 @@ internal sealed class TrayPanelWindow : Window
         var actions = new Grid();
         actions.ColumnDefinitions.Add(new ColumnDefinition());
         actions.ColumnDefinitions.Add(new ColumnDefinition());
-        var main = IconButton(Words.T(lineVisible() ? "收起晾衣绳" : "展开晾衣绳", lineVisible() ? "Hide line" : "Show line"), PrimaryStyle,
-            "M 1,3 Q 8,8 15,3 M 4,5 L 4,10 L 7,10 L 7,6 M 10,6 L 10,11 L 13,11 L 13,5", Brushes.White, 38);
+        var isLineVisible = lineVisible();
+        var main = IconButton(Words.T(isLineVisible ? "收起晾衣绳" : "展开晾衣绳", isLineVisible ? "Hide line" : "Show line"), PrimaryStyle,
+            isLineVisible ? "panel-bottom-close" : "panel-top-open", Brushes.White, 38);
         main.Margin = new Thickness(0, 0, 4, 0);
         main.Click += (_, _) => { Close(); toggleLine(); };
         actions.Children.Add(main);
-        var quit = IconButton(Words.T("退出 SnapLine", "Quit SnapLine"), DangerStyle, "M 7,2 L 3,2 L 3,14 L 7,14 M 9,5 L 12,8 L 9,11 M 6,8 L 12,8", Alert, 38);
+        var quit = IconButton(Words.T("退出 SnapLine", "Quit SnapLine"), DangerStyle, "power-off", Alert, 38);
         quit.Margin = new Thickness(4, 0, 0, 0);
         quit.Click += (_, _) => { Close(); exit(); };
         Grid.SetColumn(quit, 1);
@@ -389,18 +404,21 @@ internal sealed class TrayPanelWindow : Window
         }
         modeContent.Children.Add(modes);
         modeContent.Children.Add(Gap(8));
+        var paused = IsCollectionPaused();
         if (settingsMode == "text")
         {
             var create = Button(Words.T("＋ 新建文本", "＋ New text"), ModeActionStyle, 38);
             create.Click += (_, _) => { Close(); createText(); };
             modeContent.Children.Add(create);
             modeContent.Children.Add(Gap(4));
-            modeContent.Children.Add(ToggleRow(Words.T("收集剪贴板文本", "Collect clipboard text"), preferences.TextClipboardEnabled, async () =>
+            var textToggle = ToggleRow(Words.T("收集剪贴板文本", "Collect clipboard text"), !paused && preferences.TextClipboardEnabled, async () =>
             {
                 preferences.TextClipboardEnabled = !preferences.TextClipboardEnabled;
                 await Persist(false, false);
                 Navigate(Page.Home);
-            }));
+            });
+            textToggle.IsEnabled = !paused;
+            modeContent.Children.Add(textToggle);
             modeContent.Children.Add(CapacityRow(true));
         }
         if (settingsMode == "screenshot")
@@ -408,23 +426,25 @@ internal sealed class TrayPanelWindow : Window
             var quick = new Grid();
             quick.ColumnDefinitions.Add(new ColumnDefinition());
             quick.ColumnDefinitions.Add(new ColumnDefinition());
-            var inbox = IconButton(Words.T("打开收件箱", "Open inbox"), ModeActionStyle, "M 2,3 L 14,3 L 14,13 L 2,13 Z M 2,9 L 5,9 L 6,11 L 10,11 L 11,9 L 14,9", Ink, 38);
+            var inbox = IconButton(Words.T("打开收件箱", "Open inbox"), ModeActionStyle, "inbox", Ink, 38);
             inbox.Margin = new Thickness(0, 0, 4, 0);
             inbox.Click += (_, _) => { Close(); openInbox(); };
             quick.Children.Add(inbox);
-            var folders = IconButton(Words.T("监控目录", "Watched folders"), ModeActionStyle, "M 2,4 L 6,4 L 7,6 L 14,6 L 14,13 L 2,13 Z", Ink, 38);
+            var folders = IconButton(Words.T("监控目录", "Watched folders"), ModeActionStyle, "folder", Ink, 38);
             folders.Margin = new Thickness(4, 0, 0, 0);
             folders.Click += (_, _) => Navigate(Page.Folders);
             Grid.SetColumn(folders, 1);
             quick.Children.Add(folders);
             modeContent.Children.Add(quick);
             modeContent.Children.Add(Gap(4));
-            modeContent.Children.Add(ToggleRow(Words.T("收集剪贴板图片", "Collect clipboard images"), preferences.ClipboardEnabled, async () =>
+            var imageToggle = ToggleRow(Words.T("收集剪贴板图片", "Collect clipboard images"), !paused && preferences.ClipboardEnabled, async () =>
             {
                 preferences.ClipboardEnabled = !preferences.ClipboardEnabled;
                 await Persist(false, false);
                 Navigate(Page.Home);
-            }));
+            });
+            imageToggle.IsEnabled = !paused;
+            modeContent.Children.Add(imageToggle);
             modeContent.Children.Add(CapacityRow(false));
             modeContent.Children.Add(ScaleRow());
         }
@@ -432,6 +452,7 @@ internal sealed class TrayPanelWindow : Window
         panel.Children.Add(Gap(10));
         panel.Children.Add(Rule());
         panel.Children.Add(Gap(5));
+        panel.Children.Add(PauseRow());
         panel.Children.Add(ToggleRow(Words.T("登录 Windows 后启动", "Start with Windows"), StartupEnabled(), () =>
         {
             try { SetStartup(!StartupEnabled()); message = null; }
@@ -445,7 +466,11 @@ internal sealed class TrayPanelWindow : Window
         updateButton.HorizontalContentAlignment = HorizontalAlignment.Left;
         updateButton.Click += (_, _) => checkUpdates();
         panel.Children.Add(updateButton);
-        updateDetails = new Border { Background = Soft, CornerRadius = new CornerRadius(9), Padding = new Thickness(10), Margin = new Thickness(0, 2, 0, 5) };
+        updateDetails = new Border
+        {
+            Background = Soft, BorderBrush = Outline, BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12), Padding = new Thickness(14), Margin = new Thickness(0, 4, 0, 5)
+        };
         panel.Children.Add(updateDetails);
         UpdateUpdateSection();
         if (!string.IsNullOrWhiteSpace(message))
@@ -454,6 +479,74 @@ internal sealed class TrayPanelWindow : Window
             panel.Children.Add(Gap(5));
         }
         return panel;
+    }
+
+    private FrameworkElement SearchPage()
+    {
+        var panel = new StackPanel();
+        var query = new TextBox { Text = getSearch(), Height = 38, Padding = new Thickness(10, 7, 10, 7), FontSize = 13, BorderBrush = Outline, BorderThickness = new Thickness(1), Background = Surface };
+        System.Windows.Automation.AutomationProperties.SetName(query, Words.T("搜索内容", "Search query"));
+        query.TextChanged += (_, _) => setSearch(query.Text);
+        query.PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { query.Clear(); e.Handled = true; } };
+        panel.Children.Add(query);
+        panel.Children.Add(Gap(8));
+        var clear = Button(Words.T("清除搜索", "Clear search"), SoftStyle, 36);
+        clear.Click += (_, _) => { query.Clear(); query.Focus(); };
+        panel.Children.Add(clear);
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => query.Focus()));
+        return panel;
+    }
+
+    private FrameworkElement BackupPage()
+    {
+        var panel = new StackPanel();
+        var export = Button(Words.T("导出备份", "Export backup"), PrimaryStyle, 38);
+        export.Click += (_, _) => exportBackup();
+        panel.Children.Add(export);
+        panel.Children.Add(Gap(6));
+        var restore = Button(Words.T("恢复备份", "Restore backup"), SoftStyle, 38);
+        restore.Click += (_, _) => restoreBackup();
+        panel.Children.Add(restore);
+        return panel;
+    }
+
+    private bool IsCollectionPaused() => preferences.CollectionPausedUntil is DateTime until && (until == DateTime.MaxValue || until > DateTime.UtcNow);
+
+    private FrameworkElement PauseRow()
+    {
+        var paused = IsCollectionPaused();
+        var button = Button(Words.T("收集", "Collection"), RowStyle, 38);
+        var row = new DockPanel { LastChildFill = true };
+        row.Children.Add(Label(paused ? Words.T("已暂停", "Paused") : Words.T("收集中", "Collecting"), 11, paused ? Alert : Muted, FontWeights.Medium, TextAlignment.Right));
+        DockPanel.SetDock(row.Children[0], Dock.Right);
+        row.Children.Add(Label(Words.T("收集", "Collection"), 12, Ink, FontWeights.Medium));
+        button.Content = row;
+        System.Windows.Automation.AutomationProperties.SetName(button, Words.T("收集设置", "Collection settings"));
+        button.Click += (_, _) =>
+        {
+            var menu = WarmCardMenu.Create();
+            menu.PlacementTarget = button;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Custom;
+            menu.CustomPopupPlacementCallback = (popupSize, targetSize, _) => new[]
+            {
+                new System.Windows.Controls.Primitives.CustomPopupPlacement(
+                    new Point(targetSize.Width - popupSize.Width, targetSize.Height),
+                    System.Windows.Controls.Primitives.PopupPrimaryAxis.Vertical)
+            };
+            void Add(string zh, string en, Func<DateTime?> value)
+            {
+                var item = WarmCardMenu.TextItem(Words.T(zh, en));
+                item.Click += async (_, _) => { preferences.CollectionPausedUntil = value(); await Persist(false, false); Navigate(Page.Home); };
+                menu.Items.Add(item);
+            }
+            Add("恢复收集", "Resume collecting", () => null);
+            Add("暂停 15 分钟", "Pause for 15 minutes", () => DateTime.UtcNow.AddMinutes(15));
+            Add("暂停 1 小时", "Pause for 1 hour", () => DateTime.UtcNow.AddHours(1));
+            Add("保持暂停", "Keep paused", () => DateTime.MaxValue);
+            button.ContextMenu = menu;
+            menu.IsOpen = true;
+        };
+        return button;
     }
 
     private void UpdateUpdateSection()
@@ -468,18 +561,58 @@ internal sealed class TrayPanelWindow : Window
             return;
         }
         var details = new StackPanel();
-        details.Children.Add(Label(updateStatus.Text!, 11, updateStatus.Error ? Alert : Accent, FontWeights.Medium));
         if (updateStatus.Release != null && !updateStatus.Busy)
         {
-            var notes = new ScrollViewer { MaxHeight = 120, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 8, 0, 0) };
-            notes.Content = Label(string.IsNullOrWhiteSpace(updateStatus.Release.Notes)
+            var heading = new DockPanel { LastChildFill = true };
+            var version = new Border
+            {
+                Background = Hover, CornerRadius = new CornerRadius(6), Padding = new Thickness(7, 3, 7, 3),
+                Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                Child = Label(updateStatus.Release.Version, 11, AppTheme.AccentDark, FontWeights.SemiBold)
+            };
+            DockPanel.SetDock(version, Dock.Right);
+            heading.Children.Add(version);
+            heading.Children.Add(Label(Words.T("发现新版本", "New version available"), 13, Ink, FontWeights.SemiBold));
+            details.Children.Add(heading);
+            if (updateStatus.Error)
+            {
+                var error = Label(updateStatus.Text!, 12, Alert);
+                error.LineHeight = 20;
+                error.Margin = new Thickness(0, 10, 0, 0);
+                details.Children.Add(error);
+            }
+            // 正文独立排版，避免沿用居中标签导致长说明被裁切。
+            var body = new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(updateStatus.Release.Notes)
                 ? Words.T("此版本没有提供更新说明。", "No release notes were provided.")
-                : updateStatus.Release.Notes, 11, Ink);
-            details.Children.Add(notes);
-            var install = Button(Words.T("下载并更新", "Download and update"), PrimaryStyle, 34);
-            install.Margin = new Thickness(0, 10, 0, 0);
+                : updateStatus.Release.Notes.Trim(),
+                FontSize = 13, LineHeight = 21, LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+                Foreground = Ink, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Top,
+                Padding = new Thickness(0, 0, 6, 0)
+            };
+            var notes = new ScrollViewer
+            {
+                MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                VerticalContentAlignment = VerticalAlignment.Top, Content = body
+            };
+            System.Windows.Automation.AutomationProperties.SetName(notes, Words.T("更新说明", "Release notes"));
+            details.Children.Add(new Border
+            {
+                Background = Surface, CornerRadius = new CornerRadius(8), Padding = new Thickness(10),
+                Margin = new Thickness(0, 12, 0, 0), Child = notes
+            });
+            var install = Button(Words.T("下载并更新", "Download and update"), PrimaryStyle, 38);
+            install.Margin = new Thickness(0, 12, 0, 0);
             install.Click += (_, _) => installUpdate();
             details.Children.Add(install);
+        }
+        else
+        {
+            var status = Label(updateStatus.Text!, 12, updateStatus.Error ? Alert : AppTheme.AccentDark, FontWeights.Medium);
+            status.LineHeight = 20;
+            details.Children.Add(status);
         }
         updateDetails.Child = details;
     }
@@ -882,13 +1015,7 @@ internal sealed class TrayPanelWindow : Window
     {
         var button = Button(text, style, height);
         var content = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
-        content.Children.Add(new System.Windows.Shapes.Path
-        {
-            Data = Geometry.Parse(geometry), Width = 16, Height = 16, Stretch = Stretch.Uniform,
-            Stroke = color, StrokeThickness = 1.4, StrokeLineJoin = PenLineJoin.Round,
-            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
-            Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center
-        });
+        content.Children.Add(new LucideIcon(geometry, color, 16) { Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center });
         content.Children.Add(Label(text, 12, color, FontWeights.Medium, TextAlignment.Center));
         button.Content = content;
         return button;
@@ -918,8 +1045,10 @@ internal sealed class TrayPanelWindow : Window
 
     private static Style ButtonStyle(Brush normal, Brush hover, Brush pressed, Brush foreground, double radius)
     {
-        var frame = new FrameworkElementFactory(typeof(Border));
+        var frame = new FrameworkElementFactory(typeof(Border), "Frame");
         frame.SetValue(Border.CornerRadiusProperty, new CornerRadius(radius));
+        frame.SetValue(Border.BorderThicknessProperty, new Thickness(2));
+        frame.SetValue(Border.BorderBrushProperty, Brushes.Transparent);
         frame.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding(nameof(Control.Background)) { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
         frame.SetBinding(Border.PaddingProperty, new System.Windows.Data.Binding(nameof(Control.Padding)) { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
         var content = new FrameworkElementFactory(typeof(ContentPresenter));
@@ -927,7 +1056,11 @@ internal sealed class TrayPanelWindow : Window
         content.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
         frame.AppendChild(content);
         var style = new Style(typeof(Button));
-        style.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate(typeof(Button)) { VisualTree = frame }));
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = frame };
+        var focused = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
+        focused.Setters.Add(new Setter(Border.BorderBrushProperty, AppTheme.AccentDark, "Frame"));
+        template.Triggers.Add(focused);
+        style.Setters.Add(new Setter(Control.TemplateProperty, template));
         style.Setters.Add(new Setter(Control.BackgroundProperty, normal));
         style.Setters.Add(new Setter(Control.ForegroundProperty, foreground));
         style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(10, 5, 10, 5)));

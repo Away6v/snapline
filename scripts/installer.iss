@@ -38,6 +38,7 @@ Source: "{#PublishDir}\SnapLine.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PublishDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PublishDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PublishDir}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PublishDir}\Assets\LUCIDE-LICENSE.txt"; DestDir: "{app}\Assets"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\SnapLine"; Filename: "{app}\SnapLine.exe"; WorkingDir: "{app}"

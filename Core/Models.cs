@@ -25,6 +25,7 @@ public sealed class Preferences
     public uint ModeHotkeyKey { get; set; } = 0x4D;
     public string Appearance { get; set; } = "hemp";
     public List<string> WatchFolders { get; set; } = new();
+    public DateTime? CollectionPausedUntil { get; set; }
 }
 
 public sealed class Capture
@@ -47,6 +48,7 @@ public sealed class Capture
 
 public sealed class State
 {
+    public int SchemaVersion { get; set; } = 1;
     public Preferences Preferences { get; set; } = new();
     public List<Capture> Captures { get; set; } = new();
     public List<TextEntry> Texts { get; set; } = new();
@@ -54,6 +56,8 @@ public sealed class State
 
 public sealed class TextEntry
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Drawing.Point? AnimationOrigin { get; set; }
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Text { get; set; } = "";
     public DateTime Added { get; set; } = DateTime.UtcNow;
@@ -73,6 +77,10 @@ public static class Storage
     private static readonly string PicturesInbox = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "SnapLine");
     private static readonly Dictionary<string, string> migratedFiles = new(StringComparer.OrdinalIgnoreCase);
     private static bool stateLoadFailed;
+    private static bool loadedLegacyState;
+    private static readonly object saveLock = new();
+    internal static void WithSaveLock(Action action) { lock (saveLock) action(); }
+    public static bool NeedsManualRecovery => stateLoadFailed;
     public static bool Recovered { get; private set; }
     public static State Load()
     {
@@ -81,53 +89,103 @@ public static class Storage
         if (source == null) return new();
         try
         {
-            var state = JsonSerializer.Deserialize<State>(File.ReadAllText(source)) ?? new();
-            state.Preferences ??= new();
-            state.Captures ??= new();
-            state.Texts ??= new();
-            state.Preferences.WatchFolders ??= new();
-            if (state.Preferences.Capacity is not (25 or 50 or 100)) state.Preferences.Capacity = 100;
-            if (state.Preferences.TextCapacity is not (25 or 50 or 100)) state.Preferences.TextCapacity = 100;
-            if (state.Preferences.ImageScalePercent is not (5 or 10 or 15 or 20 or 25)) state.Preferences.ImageScalePercent = 10;
-            if (state.Preferences.DisplayMode is not ("text" or "screenshot")) state.Preferences.DisplayMode = "screenshot";
-            if (state.Preferences.Appearance is not ("hemp" or "classic")) state.Preferences.Appearance = "hemp";
-            foreach (var capture in state.Captures)
-                if (!System.IO.Path.IsPathFullyQualified(capture.Path))
-                    capture.Path = System.IO.Path.Combine(Inbox, System.IO.Path.GetFileName(capture.Path));
+            var state = ReadState(source);
+            loadedLegacyState = source.Equals(LegacyStatePath, StringComparison.OrdinalIgnoreCase);
             return state;
         }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        catch (InvalidDataException ex) when (ex.Message.StartsWith("Unsupported schema", StringComparison.Ordinal)) { throw; }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
         {
-            // 损坏的配置保留在原处，用户保存新设置前不覆盖。
+            // 仅恢复本程序上一次成功提交的状态，不用空状态覆盖损坏文件。
+            try
+            {
+                var backup = StatePath + ".bak";
+                if (source == StatePath && File.Exists(backup))
+                {
+                    var recovered = ReadState(backup);
+                    Recovered = true;
+                    return recovered;
+                }
+            }
+            catch (InvalidDataException error) when (error.Message.StartsWith("Unsupported schema", StringComparison.Ordinal)) { throw; }
+            catch (Exception) { }
             stateLoadFailed = true;
             Recovered = true;
             return new();
         }
     }
+    private static State ReadState(string source)
+    {
+        var state = JsonSerializer.Deserialize<State>(File.ReadAllText(source)) ?? throw new InvalidDataException("Empty state");
+        if (state.SchemaVersion > 1) throw new InvalidDataException("Unsupported schema: " + state.SchemaVersion);
+        state.SchemaVersion = 1;
+        state.Preferences ??= new();
+        state.Captures ??= new();
+        state.Texts ??= new();
+        state.Preferences.WatchFolders ??= new();
+        if (state.Preferences.Capacity is not (0 or 25 or 50 or 100)) state.Preferences.Capacity = 100;
+        if (state.Preferences.TextCapacity is not (25 or 50 or 100)) state.Preferences.TextCapacity = 100;
+        if (state.Preferences.ImageScalePercent is not (5 or 10 or 15 or 20 or 25)) state.Preferences.ImageScalePercent = 10;
+        if (state.Preferences.DisplayMode is not ("text" or "screenshot")) state.Preferences.DisplayMode = "screenshot";
+        if (state.Preferences.Appearance is not ("hemp" or "classic")) state.Preferences.Appearance = "hemp";
+        state.Preferences.WatchFolders = state.Preferences.WatchFolders.Where(folder => !string.IsNullOrWhiteSpace(folder) && System.IO.Path.IsPathFullyQualified(folder)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var captureIds = new HashSet<string>(StringComparer.Ordinal);
+        state.Captures = state.Captures.Where(capture => capture != null && !string.IsNullOrWhiteSpace(capture.Id)
+            && !string.IsNullOrWhiteSpace(capture.Path) && captureIds.Add(capture.Id)).ToList();
+        foreach (var capture in state.Captures.ToArray())
+        {
+            try
+            {
+                capture.Path = System.IO.Path.IsPathFullyQualified(capture.Path)
+                    ? System.IO.Path.GetFullPath(capture.Path)
+                    : System.IO.Path.Combine(Inbox, System.IO.Path.GetFileName(capture.Path));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.PathTooLongException)
+            { state.Captures.Remove(capture); }
+        }
+        var textIds = new HashSet<string>(StringComparer.Ordinal);
+        state.Texts = state.Texts.Where(text => text != null && !string.IsNullOrWhiteSpace(text.Id)
+            && !string.IsNullOrWhiteSpace(text.Text) && textIds.Add(text.Id)).ToList();
+        return state;
+    }
     public static void Save(State state)
     {
-        var temporary = StatePath + ".tmp";
-        var portable = new State
+        lock (saveLock)
         {
-            Preferences = state.Preferences,
-            Texts = state.Texts,
-            Captures = state.Captures.Select(capture => new Capture
+            if (stateLoadFailed || state.SchemaVersion > 1) throw new InvalidDataException(Words.T("原状态无法安全读取，已禁止覆盖。请先备份 Data。", "The original state could not be read safely. Back up Data before recovery."));
+            var temporary = StatePath + ".tmp";
+            var portable = new State
             {
-                Id = capture.Id,
-                Path = IsInDirectory(capture.Path, Inbox) ? System.IO.Path.Combine("Inbox", System.IO.Path.GetFileName(capture.Path)) : capture.Path,
-                Hash = capture.Hash,
-                PixelWidth = capture.PixelWidth,
-                PixelHeight = capture.PixelHeight,
-                Added = capture.Added
-            }).ToList()
-        };
-        File.WriteAllText(temporary, JsonSerializer.Serialize(portable, new JsonSerializerOptions { WriteIndented = true }));
-        if (Recovered && File.Exists(StatePath))
-        {
-            File.Copy(StatePath, StatePath + ".recovered", true);
-            Recovered = false;
+                Preferences = state.Preferences,
+                Texts = state.Texts,
+                Captures = state.Captures.Select(capture => new Capture
+                {
+                    Id = capture.Id,
+                    Path = IsInDirectory(capture.Path, Inbox) ? System.IO.Path.Combine("Inbox", System.IO.Path.GetFileName(capture.Path)) : capture.Path,
+                    Hash = capture.Hash,
+                    PixelWidth = capture.PixelWidth,
+                    PixelHeight = capture.PixelHeight,
+                    Added = capture.Added
+                }).ToList()
+            };
+            try
+            {
+                File.WriteAllText(temporary, JsonSerializer.Serialize(portable, new JsonSerializerOptions { WriteIndented = true }));
+                _ = ReadState(temporary);
+                if (File.Exists(StatePath))
+                {
+                    if (Recovered)
+                    {
+                        File.Copy(StatePath, StatePath + ".recovered", true);
+                        File.Move(temporary, StatePath, true);
+                        Recovered = false;
+                    }
+                    else File.Replace(temporary, StatePath, StatePath + ".bak");
+                }
+                else File.Move(temporary, StatePath);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
-        File.Move(temporary, StatePath, true);
     }
     public static int MigrateInbox(State state)
     {
@@ -142,6 +200,7 @@ public static class Storage
             }
             catch { failures++; }
         }
+        if (!loadedLegacyState) return failures;
         foreach (var directory in new[] { LegacyInbox, PicturesInbox })
         {
             try
@@ -160,7 +219,7 @@ public static class Storage
     }
     public static int CompleteMigration(State state, int migrationFailures)
     {
-        if (!PortableDefault || migrationFailures > 0 || stateLoadFailed) return 0;
+        if (!PortableDefault || !loadedLegacyState || migrationFailures > 0 || stateLoadFailed) return 0;
         if (migratedFiles.Count == 0 && !File.Exists(LegacyStatePath)) return 0;
         Save(state);
         var cleanupFailures = 0;

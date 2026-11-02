@@ -24,6 +24,7 @@ try {
     Copy-Item (Join-Path $PSScriptRoot '../README.md') $publish
     Copy-Item (Join-Path $PSScriptRoot '../LICENSE') $publish
     Copy-Item (Join-Path $PSScriptRoot '../THIRD-PARTY-NOTICES.md') $publish
+    foreach ($required in @('SnapLine.exe', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Assets/LUCIDE-LICENSE.txt')) { if (-not (Test-Path -LiteralPath (Join-Path $publish $required))) { throw "发布包缺少文件：$required" } }
     $archive = Join-Path $output "SnapLine-$Version-$Runtime.zip"
     Compress-Archive -Path "$publish/*" -DestinationPath $archive -Force
     & $InnoSetupCompiler "/DAppVersion=$Version" "/DPublishDir=$publish" "/DOutputDir=$output" "/DRuntime=$Runtime" (Join-Path $PSScriptRoot 'installer.iss')

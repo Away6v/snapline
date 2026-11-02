@@ -25,57 +25,69 @@ public sealed class TextLibrary
         Changed?.Invoke();
     }
 
-    public bool Import(string text)
+    public const int MaxTextLength = 100_000;
+    public bool Import(string text, System.Drawing.Point? animationOrigin = null)
     {
-        if (string.IsNullOrWhiteSpace(text) || state.Texts.Any(item => item.Text == text)) return false;
-        state.Texts.Add(new TextEntry { Text = text });
+        if (!Valid(text) || state.Texts.Any(item => item.Text == text)) return false;
+        var previous = state.Texts.ToList();
+        state.Texts.Add(new TextEntry { Text = text, AnimationOrigin = animationOrigin });
         Trim();
-        Save();
+        if (!Save()) { Restore(previous); return false; }
         Changed?.Invoke();
         return true;
     }
 
     public TextEntry? Add(string text)
     {
-        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (!Valid(text)) return null;
+        var previous = state.Texts.ToList();
         var entry = new TextEntry { Text = text };
         state.Texts.Add(entry);
         Trim();
-        Save();
+        if (!Save()) { Restore(previous); return null; }
         Changed?.Invoke();
         return entry;
     }
 
     public void Edit(TextEntry entry, string text)
     {
-        if (!state.Texts.Contains(entry) || string.IsNullOrWhiteSpace(text)) return;
+        if (!state.Texts.Contains(entry) || !Valid(text)) return;
+        var oldText = entry.Text;
+        var oldModified = entry.Modified;
         entry.Text = text;
         entry.Modified = DateTime.UtcNow;
-        Save();
+        if (!Save()) { entry.Text = oldText; entry.Modified = oldModified; return; }
         Changed?.Invoke();
     }
 
     public void Remove(TextEntry entry)
     {
-        if (!state.Texts.Remove(entry)) return;
-        Save();
+        var index = state.Texts.IndexOf(entry);
+        if (index < 0) return;
+        state.Texts.RemoveAt(index);
+        if (!Save()) { state.Texts.Insert(index, entry); return; }
         Changed?.Invoke();
     }
 
     public void RemoveAll()
     {
         if (state.Texts.Count == 0) return;
+        var previous = state.Texts.ToList();
         state.Texts.Clear();
-        Save();
+        if (!Save()) { Restore(previous); return; }
         Changed?.Invoke();
     }
 
-    public void SetCapacity(int capacity)
+    public bool SetCapacity(int capacity)
     {
+        var previous = state.Texts.ToList();
+        var oldCapacity = preferences.TextCapacity;
         preferences.TextCapacity = capacity is 25 or 50 or 100 ? capacity : 100;
         Trim();
-        Save();
+        if (previous.Count == state.Texts.Count && oldCapacity == preferences.TextCapacity) return true;
+        if (!Save()) { preferences.TextCapacity = oldCapacity; Restore(previous); return false; }
         Changed?.Invoke();
+        return true;
     }
 
     private void Trim()
@@ -86,9 +98,21 @@ public sealed class TextLibrary
             state.Texts.Remove(oldest);
         }
     }
-    private void Save()
+    private bool Valid(string text)
     {
-        try { Storage.Save(state); }
-        catch (Exception ex) { Error?.Invoke(Words.T("无法保存文本：", "Cannot save text: ") + ex.Message); }
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (text.Length <= MaxTextLength) return true;
+        Error?.Invoke(Words.T("文本超过 100000 字符限制。", "Text exceeds the 100,000-character limit."));
+        return false;
+    }
+    private void Restore(System.Collections.Generic.List<TextEntry> previous)
+    {
+        state.Texts.Clear();
+        state.Texts.AddRange(previous);
+    }
+    private bool Save()
+    {
+        try { Storage.Save(state); return true; }
+        catch (Exception ex) { Error?.Invoke(Words.T("无法保存文本：", "Cannot save text: ") + ex.Message); return false; }
     }
 }

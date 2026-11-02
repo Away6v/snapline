@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
@@ -26,10 +27,82 @@ public sealed class CaptureLibrary
     public int Capacity => state.Preferences.Capacity == 0 ? automaticCapacity : state.Preferences.Capacity;
     public CaptureLibrary(State state) => this.state = state;
 
-    public void Save()
+    internal async Task ExportBackupAsync(string destination)
     {
-        try { Storage.Save(state); }
-        catch (Exception ex) { Error?.Invoke(Words.T("无法保存设置：", "Cannot save settings: ") + ex.Message); }
+        await gate.WaitAsync();
+        string snapshot;
+        try { snapshot = await Task.Run(() => BackupService.CreateSnapshot(destination)); }
+        finally { gate.Release(); }
+        try { await Task.Run(() => BackupService.Export(destination, snapshot)); }
+        finally { try { Directory.Delete(snapshot, true); } catch { } }
+    }
+
+    private sealed class RecoveryRecord
+    {
+        public Capture? Capture { get; set; }
+        public string Kind { get; set; } = "pin";
+        public bool Completed { get; set; }
+    }
+    private static RecoveryRecord ReadRecovery(string path)
+    {
+        var json = File.ReadAllText(path);
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("Capture", out _)
+            ? JsonSerializer.Deserialize<RecoveryRecord>(json) ?? throw new InvalidDataException()
+            : new RecoveryRecord { Capture = JsonSerializer.Deserialize<Capture>(json) };
+    }
+    internal string BeginRecovery(Capture item, string kind = "pin")
+    {
+        var record = new Capture { Id = item.Id, Path = Storage.Owns(item.Path) ? Path.Combine("Inbox", Path.GetFileName(item.Path)) : item.Path,
+            Hash = item.Hash, PixelWidth = item.PixelWidth, PixelHeight = item.PixelHeight, Added = item.Added };
+        var path = Path.Combine(Storage.Root, "recovery-" + Guid.NewGuid().ToString("N") + ".json");
+        Storage.WithSaveLock(() => File.WriteAllText(path, JsonSerializer.Serialize(new RecoveryRecord { Capture = record, Kind = kind })));
+        return path;
+    }
+    internal bool CompleteRecovery(string path)
+    {
+        try
+        {
+            Storage.WithSaveLock(() =>
+            {
+                var record = ReadRecovery(path);
+                record.Completed = true;
+                var temporary = path + ".tmp";
+                try { File.WriteAllText(temporary, JsonSerializer.Serialize(record)); File.Move(temporary, path, true); }
+                finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                try { File.Delete(path); } catch { }
+            });
+            return true;
+        }
+        catch (Exception ex) { Error?.Invoke(Words.T("无法完成图片恢复记录：", "Could not complete the image recovery record: ") + ex.Message); return false; }
+    }
+    internal void RecoverInterrupted()
+    {
+        foreach (var path in Directory.EnumerateFiles(Storage.Root, "recovery-*.json"))
+        {
+            try
+            {
+                var record = ReadRecovery(path);
+                if (record.Completed) { try { File.Delete(path); } catch { } continue; }
+                var item = record.Capture;
+                if (item == null || string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Path)) continue;
+                if (!Path.IsPathFullyQualified(item.Path)) item.Path = Path.Combine(Storage.Inbox, Path.GetFileName(item.Path));
+                if (!state.Captures.Any(existing => existing.Id == item.Id))
+                {
+                    if (record.Kind == "remove" && !File.Exists(item.Path)) continue;
+                    state.Captures.Add(item);
+                    if (!Save()) { state.Captures.Remove(item); continue; }
+                }
+                CompleteRecovery(path);
+            }
+            catch (Exception ex) { Error?.Invoke(Words.T("无法恢复中断的图片操作：", "Could not recover an interrupted image operation: ") + ex.Message); }
+        }
+    }
+
+    public bool Save()
+    {
+        try { Storage.Save(state); return true; }
+        catch (Exception ex) { Error?.Invoke(Words.T("无法保存设置：", "Cannot save settings: ") + ex.Message); return false; }
     }
     public async Task RestoreAsync()
     {
@@ -43,11 +116,7 @@ public sealed class CaptureLibrary
                 item.Hash = image.Hash;
                 item.PixelWidth = image.Full.PixelWidth;
                 item.PixelHeight = image.Full.PixelHeight;
-                if (Storage.Owns(item.Path) && image.AlphaRepaired)
-                {
-                    try { await Task.Run(() => SavePng(item.Path, image.Full)); }
-                    catch { }
-                }
+
             }
             catch { item.Thumbnail = null; unavailable++; }
         }
@@ -55,17 +124,28 @@ public sealed class CaptureLibrary
         Save();
         Changed?.Invoke();
     }
-    public async Task<bool> ImportAsync(string path, bool notify = true, System.Drawing.Point? animationOrigin = null)
+    public async Task<bool> ImportAsync(string path, bool notify = true, System.Drawing.Point? animationOrigin = null, CancellationToken cancellationToken = default, Action<Exception>? failure = null)
     {
-        await gate.WaitAsync();
+        try { await gate.WaitAsync(cancellationToken); }
+        catch (OperationCanceledException) { return false; }
+        var before = state.Captures.ToList();
+        Capture? modified = null;
+        string? oldHash = null;
+        BitmapSource? oldThumbnail = null;
+        int oldWidth = 0, oldHeight = 0;
+        var committed = false;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             path = System.IO.Path.GetFullPath(path);
-            var image = await Task.Run(() => Read(path));
+            var image = await Task.Run(() => Read(path), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             var samePath = state.Captures.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
             if (samePath != null)
             {
                 if (samePath.Hash == image.Hash && samePath.Thumbnail != null) return true;
+                modified = samePath; oldHash = samePath.Hash; oldThumbnail = samePath.Thumbnail;
+                oldWidth = samePath.PixelWidth; oldHeight = samePath.PixelHeight;
                 samePath.Hash = image.Hash;
                 samePath.Thumbnail = image.Thumb;
                 samePath.PixelWidth = image.Full.PixelWidth;
@@ -76,13 +156,22 @@ public sealed class CaptureLibrary
                 if (state.Captures.Any(x => x.Hash == image.Hash)) return true;
                 state.Captures.Add(new Capture { Path = path, Hash = image.Hash, Thumbnail = image.Thumb, PixelWidth = image.Full.PixelWidth, PixelHeight = image.Full.PixelHeight, AnimationOrigin = animationOrigin });
             }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Save()) throw new IOException(Words.T("状态未保存。", "State was not saved."));
+            committed = true;
             await TrimAsync();
-            Save();
             Changed?.Invoke();
             return true;
         }
+        catch (OperationCanceledException)
+        {
+            if (!committed) { state.Captures.Clear(); state.Captures.AddRange(before); if (modified != null) { modified.Hash = oldHash!; modified.Thumbnail = oldThumbnail; modified.PixelWidth = oldWidth; modified.PixelHeight = oldHeight; } }
+            return false;
+        }
         catch (Exception ex)
         {
+            if (!committed) { state.Captures.Clear(); state.Captures.AddRange(before); if (modified != null) { modified.Hash = oldHash!; modified.Thumbnail = oldThumbnail; modified.PixelWidth = oldWidth; modified.PixelHeight = oldHeight; } }
+            failure?.Invoke(ex);
             if (notify) Error?.Invoke(Words.T("无法读取图片：", "Cannot read image: ") + ex.Message);
             return false;
         }
@@ -92,6 +181,7 @@ public sealed class CaptureLibrary
     {
         await gate.WaitAsync();
         string? created = null;
+        var before = state.Captures.ToList();
         try
         {
             bitmap = await Task.Run(() => Detach(bitmap));
@@ -107,12 +197,16 @@ public sealed class CaptureLibrary
                 return CreateThumbnail(bitmap);
             });
             state.Captures.Add(new Capture { Path = created, Hash = hash, Thumbnail = thumb, PixelWidth = bitmap.PixelWidth, PixelHeight = bitmap.PixelHeight, AnimationOrigin = animationOrigin });
+            if (!Save()) throw new IOException(Words.T("状态未保存。", "State was not saved."));
             created = null;
             await TrimAsync();
-            Save();
             Changed?.Invoke();
         }
-        catch (Exception ex) { Error?.Invoke(Words.T("无法收集剪贴板图片：", "Cannot collect clipboard image: ") + ex.Message); }
+        catch (Exception ex)
+        {
+            state.Captures.Clear(); state.Captures.AddRange(before);
+            Error?.Invoke(Words.T("无法收集剪贴板图片：", "Cannot collect clipboard image: ") + ex.Message);
+        }
         finally
         {
             if (created != null) { try { File.Delete(created); } catch { } }
@@ -123,27 +217,65 @@ public sealed class CaptureLibrary
     {
         automaticCapacity = Math.Max(100, visible);
         await gate.WaitAsync();
-        try { await TrimAsync(); Save(); Changed?.Invoke(); }
+        try { if (!Save()) return; await TrimAsync(); Changed?.Invoke(); }
         finally { gate.Release(); }
     }
     private async Task TrimAsync(Capture? keep = null)
     {
-        while (state.Captures.Count > Capacity)
+        foreach (var item in state.Captures.ToArray())
         {
-            var first = state.Captures.First(item => !ReferenceEquals(item, keep));
-            if (first.Thumbnail == null || !await RemoveFileAsync(first)) break;
-            state.Captures.Remove(first);
+            if (state.Captures.Count <= Capacity) break;
+            if (ReferenceEquals(item, keep) || item.Thumbnail == null) continue;
+            if (!await RemoveCommittedAsync(item)) break;
         }
+        if (state.Captures.Count > Capacity)
+            Error?.Invoke(Words.T("部分图片暂不可用，保留数量暂时超出限制。", "Some images are unavailable; the limit is temporarily exceeded."));
+    }
+    public async Task ConfirmMovedAsync(Capture item)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (!state.Captures.Contains(item) || File.Exists(item.Path)) return;
+            var position = state.Captures.IndexOf(item);
+            state.Captures.RemoveAt(position);
+            if (!Save()) { state.Captures.Insert(position, item); return; }
+            Changed?.Invoke();
+        }
+        finally { gate.Release(); }
+    }
+    public void MarkUnavailable(string path)
+    {
+        var affected = state.Captures.Where(item => item.Thumbnail != null && item.Path.Equals(path, StringComparison.OrdinalIgnoreCase)).ToArray();
+        foreach (var item in affected)
+            item.Thumbnail = null;
+        if (affected.Length > 0) Changed?.Invoke();
+    }
+    public async Task RenameAsync(string oldPath, string newPath)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var item = state.Captures.FirstOrDefault(capture => capture.Path.Equals(oldPath, StringComparison.OrdinalIgnoreCase));
+            if (item == null) return;
+            if (state.Captures.Any(capture => !ReferenceEquals(capture, item) && capture.Path.Equals(newPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                item.Thumbnail = null;
+                Changed?.Invoke();
+                return;
+            }
+            item.Path = newPath;
+            if (!Save()) { item.Path = oldPath; item.Thumbnail = null; }
+            Changed?.Invoke();
+        }
+        finally { gate.Release(); }
     }
     public async Task RemoveAsync(Capture item)
     {
         await gate.WaitAsync();
         try
         {
-            if (!await RemoveFileAsync(item)) return;
-            state.Captures.Remove(item);
-            Save();
-            Changed?.Invoke();
+            if (await RemoveCommittedAsync(item)) Changed?.Invoke();
         }
         finally { gate.Release(); }
     }
@@ -153,8 +285,10 @@ public sealed class CaptureLibrary
         try
         {
             RememberHangingOrder();
-            if (!state.Captures.Remove(item)) return false;
-            Save();
+            var position = state.Captures.IndexOf(item);
+            if (position < 0) return false;
+            state.Captures.RemoveAt(position);
+            if (!Save()) { state.Captures.Insert(position, item); return false; }
             Changed?.Invoke();
             return true;
         }
@@ -169,6 +303,7 @@ public sealed class CaptureLibrary
     public async Task<bool> ReturnAsync(Capture item, System.Drawing.Rectangle origin)
     {
         await gate.WaitAsync();
+        var before = state.Captures.ToList();
         try
         {
             var image = await Task.Run(() => Read(item.Path));
@@ -187,8 +322,8 @@ public sealed class CaptureLibrary
             item.ReturningToLine = true;
             var index = state.Captures.FindIndex(capture => hangingOrder[capture.Id] > order);
             state.Captures.Insert(index < 0 ? state.Captures.Count : index, item);
+            if (!Save()) { state.Captures.Clear(); state.Captures.AddRange(before); return false; }
             await TrimAsync(item);
-            Save();
             Changed?.Invoke();
             return true;
         }
@@ -204,16 +339,56 @@ public sealed class CaptureLibrary
         await gate.WaitAsync();
         try
         {
-            var changed = false;
-            foreach (var item in state.Captures.ToArray())
+            var before = state.Captures.ToArray();
+            var selected = new List<(Capture Item, string? Recovery)>();
+            foreach (var item in before)
             {
-                if (!await RemoveFileAsync(item)) continue;
-                state.Captures.Remove(item);
-                changed = true;
+                try
+                {
+                    var recovery = Storage.Owns(item.Path) && File.Exists(item.Path) ? BeginRecovery(item, "remove") : null;
+                    selected.Add((item, recovery));
+                }
+                catch (Exception ex) { Error?.Invoke(Words.T("无法保护图片记录：", "Could not protect the image record: ") + ex.Message); }
             }
-            if (changed) { Save(); Changed?.Invoke(); }
+            if (selected.Count == 0) return;
+            foreach (var (item, _) in selected) state.Captures.Remove(item);
+            if (!Save())
+            {
+                state.Captures.Clear(); state.Captures.AddRange(before);
+                foreach (var (_, recovery) in selected) if (recovery != null) CompleteRecovery(recovery);
+                return;
+            }
+            var failed = new HashSet<Capture>();
+            foreach (var (item, recovery) in selected)
+            {
+                if (await RemoveFileAsync(item)) { if (recovery != null) CompleteRecovery(recovery); }
+                else failed.Add(item);
+            }
+            if (failed.Count > 0)
+            {
+                var retained = new HashSet<Capture>(state.Captures);
+                retained.UnionWith(failed);
+                state.Captures.Clear(); state.Captures.AddRange(before.Where(retained.Contains));
+                if (Save())
+                    foreach (var (item, recovery) in selected) if (failed.Contains(item) && recovery != null) CompleteRecovery(recovery);
+            }
+            Changed?.Invoke();
         }
         finally { gate.Release(); }
+    }
+    private async Task<bool> RemoveCommittedAsync(Capture item)
+    {
+        var position = state.Captures.IndexOf(item);
+        if (position < 0) return false;
+        string? recovery = null;
+        try { if (Storage.Owns(item.Path) && File.Exists(item.Path)) recovery = BeginRecovery(item, "remove"); }
+        catch (Exception ex) { Error?.Invoke(Words.T("无法保护图片记录：", "Could not protect the image record: ") + ex.Message); return false; }
+        state.Captures.RemoveAt(position);
+        if (!Save()) { state.Captures.Insert(position, item); if (recovery != null) CompleteRecovery(recovery); return false; }
+        if (await RemoveFileAsync(item)) { if (recovery != null) CompleteRecovery(recovery); return true; }
+        state.Captures.Insert(Math.Min(position, state.Captures.Count), item);
+        if (Save() && recovery != null) CompleteRecovery(recovery);
+        return false;
     }
     private async Task<bool> RemoveFileAsync(Capture item)
     {
@@ -241,6 +416,54 @@ public sealed class CaptureLibrary
                 await ImportAsync(item.Path, false);
         }
         finally { retrying = false; }
+    }
+    public async Task SaveEditedAsync(Capture item, BitmapSource bitmap, bool replace)
+    {
+        await gate.WaitAsync();
+        string? created = null;
+        try
+        {
+            if (replace && !state.Captures.Contains(item))
+                throw new InvalidOperationException(Words.T("原截图已被取下，请选择新增截图。", "The original screenshot was removed. Choose to add a new screenshot."));
+            var image = await Task.Run(() => Detach(bitmap));
+            var hash = await Task.Run(() => Fingerprint(image));
+            var thumb = await Task.Run(() => CreateThumbnail(image));
+            created = System.IO.Path.Combine(Storage.Inbox, "Edit-" + Guid.NewGuid().ToString("N") + ".png");
+            var destination = created;
+            await Task.Run(() => SavePng(destination, image));
+            var oldPath = item.Path;
+            var oldHash = item.Hash;
+            var oldThumb = item.Thumbnail;
+            var oldWidth = item.PixelWidth;
+            var oldHeight = item.PixelHeight;
+            var added = replace ? item : new Capture();
+            added.Path = destination;
+            added.Hash = hash;
+            added.Thumbnail = thumb;
+            added.PixelWidth = image.PixelWidth;
+            added.PixelHeight = image.PixelHeight;
+            if (!replace) state.Captures.Add(added);
+            try { Storage.Save(state); }
+            catch
+            {
+                if (!replace) state.Captures.Remove(added);
+                else { item.Path = oldPath; item.Hash = oldHash; item.Thumbnail = oldThumb; item.PixelWidth = oldWidth; item.PixelHeight = oldHeight; }
+                throw;
+            }
+            created = null;
+            if (replace && Storage.Owns(oldPath) && !state.Captures.Any(c => c.Path.Equals(oldPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                try { await Task.Run(() => FileSystem.DeleteFile(oldPath, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.ThrowException)); }
+                catch (Exception ex) { Error?.Invoke(Words.T("旧图片未能移到回收站，文件已保留：", "Could not recycle the previous image; it was kept: ") + ex.Message); }
+            }
+            if (!replace) await TrimAsync(added);
+            Changed?.Invoke();
+        }
+        finally
+        {
+            if (created != null) { try { File.Delete(created); } catch { } }
+            gate.Release();
+        }
     }
     public async Task<string?> EditablePathAsync(Capture item)
     {
@@ -274,23 +497,15 @@ public sealed class CaptureLibrary
     }
     public static BitmapSource LoadFull(string path)
     {
-        return LoadFullWithInfo(path).Image;
-    }
-    private static (BitmapSource Image, bool AlphaRepaired) LoadFullWithInfo(string path)
-    {
         var info = new FileInfo(path);
-        if (info.Length > 64L * 1024 * 1024) throw new IOException(Words.T("图片超过 64 MB 限制。", "Image exceeds the 64 MB limit."));
+        if (info.Length > 64L * 1024 * 1024) throw new InvalidDataException(Words.T("图片超过 64 MB 限制。", "Image exceeds the 64 MB limit."));
         using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
         var frame = decoder.Frames[0];
-        if ((long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new IOException(Words.T("图片像素过大。", "Image dimensions are too large."));
-        return DetachWithInfo(frame);
+        if ((long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new InvalidDataException(Words.T("图片像素过大。", "Image dimensions are too large."));
+        return Detach(frame);
     }
     private static BitmapSource Detach(BitmapSource frame)
-    {
-        return DetachWithInfo(frame).Image;
-    }
-    private static (BitmapSource Image, bool AlphaRepaired) DetachWithInfo(BitmapSource frame)
     {
         if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0 || (long)frame.PixelWidth * frame.PixelHeight > 80_000_000) throw new IOException(Words.T("图片像素过大。", "Image dimensions are too large."));
         // 解码帧携带线程相关的元数据；转成独立像素源后再跨线程用于剪贴板和预览。
@@ -298,20 +513,9 @@ public sealed class CaptureLibrary
         var stride = checked(frame.PixelWidth * 4);
         var pixels = new byte[checked(stride * frame.PixelHeight)];
         converted.CopyPixels(pixels, stride, 0);
-        var allTransparent = true;
-        var hasColor = false;
-        for (var i = 0; i < pixels.Length; i += 4)
-        {
-            if (pixels[i + 3] != 0) allTransparent = false;
-            if (pixels[i] != 0 || pixels[i + 1] != 0 || pixels[i + 2] != 0) hasColor = true;
-            if (!allTransparent && hasColor) break;
-        }
-        var alphaRepaired = allTransparent && hasColor;
-        if (alphaRepaired)
-            for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
         var bitmap = BitmapSource.Create(frame.PixelWidth, frame.PixelHeight, frame.DpiX, frame.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         bitmap.Freeze();
-        return (bitmap, alphaRepaired);
+        return bitmap;
     }
     private static void SavePng(string path, BitmapSource bitmap)
     {
@@ -328,11 +532,11 @@ public sealed class CaptureLibrary
             if (File.Exists(temporary)) File.Delete(temporary);
         }
     }
-    private static (BitmapSource Thumb, string Hash, BitmapSource Full, bool AlphaRepaired) Read(string path)
+    private static (BitmapSource Thumb, string Hash, BitmapSource Full) Read(string path)
     {
-        var (full, alphaRepaired) = LoadFullWithInfo(path);
+        var full = LoadFull(path);
         var hash = Fingerprint(full);
-        return (CreateThumbnail(full), hash, full, alphaRepaired);
+        return (CreateThumbnail(full), hash, full);
     }
     private static BitmapSource CreateThumbnail(BitmapSource full)
     {

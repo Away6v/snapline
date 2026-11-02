@@ -30,6 +30,19 @@ internal sealed class SmoothScroll
 
     private void Wheel(object sender, MouseWheelEventArgs e)
     {
+        // 内层说明仍有可滚动内容时，优先让鼠标所在区域处理滚轮。
+        for (var source = e.OriginalSource as DependencyObject; source != null && source != viewer;
+            source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source))
+        {
+            if (source is not ScrollViewer nested) continue;
+            var offset = horizontal ? nested.HorizontalOffset : nested.VerticalOffset;
+            var maximum = horizontal ? nested.ScrollableWidth : nested.ScrollableHeight;
+            if (e.Delta > 0 ? offset > 0 : offset < maximum)
+            {
+                Stop();
+                return;
+            }
+        }
         if (Maximum <= 0) return;
         if (!running) target = position = Offset;
         target = Math.Clamp(target - e.Delta * (horizontal ? 1.25 : 0.7), 0, Maximum);

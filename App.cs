@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,20 +20,34 @@ public sealed class App : Application
     private State state = new();
     private CaptureLibrary library = null!;
     private TextLibrary textLibrary = null!;
-    private DateTime lastNotice;
+    private readonly Queue<string> notices = new();
+    private readonly DispatcherTimer noticeTimer = new() { Interval = TimeSpan.FromSeconds(6) };
     private readonly UpdateStatus updateStatus = new();
     [STAThread]
     public static void Main()
     {
         var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         ThemeScrollBars.Apply(app);
+        ThemeToolTips.Apply(app);
         app.Run();
     }
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        noticeTimer.Tick += (_, _) => ShowNextNotice();
         instance = new Mutex(true, @"Local\SnapLine.Desktop", out var first);
         if (!first) { MessageBox.Show("SnapLine 已在托盘运行 / SnapLine is already running in the tray.", "SnapLine"); Shutdown(); return; }
+        var updateAck = Environment.GetEnvironmentVariable("SNAPLINE_UPDATE_ACK");
+        var updateToken = Environment.GetEnvironmentVariable("SNAPLINE_UPDATE_TOKEN");
+        DispatcherTimer? progressTimer = null;
+        if (!string.IsNullOrWhiteSpace(updateAck) && !string.IsNullOrWhiteSpace(updateToken))
+        {
+            void ReportProgress() { try { File.WriteAllText(updateAck + ".progress", updateToken); } catch { } }
+            ReportProgress();
+            progressTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            progressTimer.Tick += (_, _) => ReportProgress();
+            progressTimer.Start();
+        }
         try
         {
             state = Storage.Load();
@@ -41,6 +56,7 @@ public sealed class App : Application
             Words.Language = state.Preferences.Language;
             library = new CaptureLibrary(state);
             library.Error += Notify;
+            library.RecoverInterrupted();
             await library.RestoreAsync();
             textLibrary = new TextLibrary(state);
             textLibrary.Error += Notify;
@@ -58,6 +74,7 @@ public sealed class App : Application
                 trayPanel?.RefreshDisplayMode();
             };
             CreateTray();
+            if (notices.Count > 0 && !noticeTimer.IsEnabled) ShowNextNotice();
             if (!collectors.RegisterShortcut(false, state.Preferences.HotkeyModifiers, state.Preferences.HotkeyKey))
                 Notify(Words.T("显示快捷键已被占用，请在托盘面板中修改。", "Show shortcut is already in use. Change it in the tray panel."));
             if (!collectors.RegisterShortcut(true, state.Preferences.ModeHotkeyModifiers, state.Preferences.ModeHotkeyKey))
@@ -65,8 +82,17 @@ public sealed class App : Application
             if (!collectors.ClipboardAvailable) Notify(Words.T("剪贴板监听启动失败，目录收集仍可用。", "Clipboard listener failed; folder collection is still available."));
             collectors.Rewatch();
             line.Start();
+            // 安装器只在应用完成初始化后接收健康确认。
+            if (!Storage.NeedsManualRecovery && !string.IsNullOrWhiteSpace(updateAck) && !string.IsNullOrWhiteSpace(updateToken))
+            {
+                try { File.WriteAllText(updateAck, updateToken); }
+                catch { }
+            }
+            progressTimer?.Stop();
             if (migrationFailures > 0 || cleanupFailures > 0) Notify(Words.T("部分旧数据未能迁入程序包，请检查 Data 文件夹。", "Some old data could not be moved into the app package. Check the Data folder."));
-            if (recovered) Notify(Words.T("配置无法读取，已使用默认设置；原配置已保留为恢复副本。", "Settings could not be read. Defaults are in use; the original was kept as a recovery copy."));
+            if (recovered) Notify(Storage.NeedsManualRecovery
+                ? Words.T("配置及其备份无法读取，已禁止覆盖原数据，请先备份 Data。", "The state and its backup could not be read. Original data is protected; back up Data first.")
+                : Words.T("配置无法读取，已从备份恢复；原配置已保留为恢复副本。", "The state was restored from a backup; the original was kept as a recovery copy."));
             if (!state.Preferences.OnboardingComplete)
             {
                 MessageBox.Show(Words.T(
@@ -84,6 +110,7 @@ public sealed class App : Application
         }
         catch (Exception ex)
         {
+            progressTimer?.Stop();
             MessageBox.Show(Words.T("SnapLine 无法启动：\n", "SnapLine could not start:\n") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
@@ -105,7 +132,7 @@ public sealed class App : Application
         var panel = new TrayPanelWindow(state.Preferences, () => library.Items.Count, () => textLibrary.Items.Count, () => System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Take(library.Items, 2)), () => line?.IsRevealed == true,
             () => line?.Toggle(), OpenInbox, () => Shutdown(),
             (mode, modifiers, key) => collectors!.RegisterShortcut(mode, modifiers, key), ApplyTraySettingsAsync,
-            mode => line?.SetDisplayMode(mode), () => line?.CreateText(), updateStatus, () => _ = CheckUpdatesAsync(), () => _ = InstallUpdateAsync());
+            mode => line?.SetDisplayMode(mode), () => line?.CreateText(), updateStatus, () => _ = CheckUpdatesAsync(), () => _ = InstallUpdateAsync(), () => line?.SearchQuery ?? "", query => line?.SetSearchQuery(query), ExportBackup, RestoreBackup);
         trayPanel = panel;
         panel.Closed += (_, _) => { if (ReferenceEquals(trayPanel, panel)) trayPanel = null; };
         var cursor = Forms.Cursor.Position;
@@ -118,8 +145,8 @@ public sealed class App : Application
     private async Task ApplyTraySettingsAsync(bool refreshLine, bool rewatch)
     {
         Words.Language = state.Preferences.Language;
-        library.Save();
-        textLibrary.SetCapacity(state.Preferences.TextCapacity);
+        if (!library.Save()) throw new IOException(Words.T("设置未保存，本次更改可能只在当前运行期间生效。", "Settings were not saved; changes may only apply during this session."));
+        if (!textLibrary.SetCapacity(state.Preferences.TextCapacity)) throw new IOException(Words.T("文本数量调整未保存。", "The text limit change was not saved."));
         if (rewatch) collectors!.Rewatch();
         if (refreshLine) await line!.RefreshSettingsAsync();
     }
@@ -175,6 +202,29 @@ public sealed class App : Application
             trayPanel?.RefreshUpdate();
         }
     }
+    private async void ExportBackup()
+    {
+        using var dialog = new Forms.SaveFileDialog { Filter = "SnapLine backup (*.zip)|*.zip", FileName = $"SnapLine-{DateTime.Now:yyyyMMdd}.zip", AddExtension = true };
+        if (dialog.ShowDialog() != Forms.DialogResult.OK) return;
+        try { await library.ExportBackupAsync(dialog.FileName); Notify(Words.T("备份已导出。", "Backup exported.")); }
+        catch (Exception ex) { Notify(Words.T("无法导出备份：", "Could not export backup: ") + ex.Message); }
+    }
+    private void RestoreBackup()
+    {
+        using var dialog = new Forms.OpenFileDialog { Filter = "SnapLine backup (*.zip)|*.zip", CheckFileExists = true };
+        if (dialog.ShowDialog() != Forms.DialogResult.OK) return;
+        try
+        {
+            var missing = BackupService.CountMissingExternalImages(dialog.FileName);
+            var warning = Words.T("恢复将替换当前本地数据并重启 SnapLine。", "Restoring replaces current local data and restarts SnapLine.");
+            if (missing > 0) warning += Words.T($"\n\n备份中的 {missing} 张外部截图在此电脑上不可用，恢复后这些图片将无法显示。", $"\n\n{missing} external images in this backup are unavailable on this computer and will not be displayed after restoring.");
+            if (MessageBox.Show(warning, "SnapLine", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+            BackupService.RestoreAndRestart(dialog.FileName);
+            Shutdown();
+        }
+        catch (Exception ex) { Notify(Words.T("无法恢复备份：", "Could not restore backup: ") + ex.Message); }
+    }
+
     private void OpenInbox()
     {
         try { Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { Storage.Inbox }, UseShellExecute = true }); }
@@ -183,14 +233,19 @@ public sealed class App : Application
     private void Notify(string text)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Notify(text)); return; }
-        if (tray == null) { MessageBox.Show(text, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
-        if (DateTime.UtcNow - lastNotice < TimeSpan.FromSeconds(3)) return;
-        lastNotice = DateTime.UtcNow;
-        tray.ShowBalloonTip(6000, "SnapLine", text, Forms.ToolTipIcon.Warning);
+        if (!notices.Contains(text)) notices.Enqueue(text);
+        if (tray != null && !noticeTimer.IsEnabled) ShowNextNotice();
+    }
+    private void ShowNextNotice()
+    {
+        if (tray == null || notices.Count == 0) { noticeTimer.Stop(); return; }
+        tray.ShowBalloonTip(6000, "SnapLine", notices.Dequeue(), Forms.ToolTipIcon.Warning);
+        noticeTimer.Start();
     }
     protected override void OnExit(ExitEventArgs e)
     {
         trayPanel?.Close();
+        noticeTimer.Stop();
         line?.Stop();
         collectors?.Dispose();
         if (tray != null) { tray.Visible = false; tray.Icon?.Dispose(); tray.Dispose(); }

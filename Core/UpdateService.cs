@@ -70,8 +70,12 @@ internal static class UpdateService
         try
         {
             var archive = Path.Combine(temp, "package.zip");
+            using var response = await Client.GetAsync(release.PackageUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength is long downloadSize)
+                EnsureFreeSpace(temp, checked(downloadSize + 4L * 1024 * 1024));
             await using (var output = File.Create(archive))
-            await using (var input = await Client.GetStreamAsync(release.PackageUrl))
+            await using (var input = await response.Content.ReadAsStreamAsync())
                 await input.CopyToAsync(output);
             progress?.Report(Words.T("正在校验更新…", "Verifying the update…"));
             var checksum = release.Digest ?? (await Client.GetStringAsync(release.ChecksumUrl!)).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
@@ -80,25 +84,77 @@ internal static class UpdateService
             if (checksum == null || !actual.Equals(checksum, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException(Words.T("安装包校验失败。", "Package checksum verification failed."));
             await file.DisposeAsync();
             var staged = Path.Combine(temp, "package");
+            var target = AppContext.BaseDirectory;
+            CheckInstallSpace(archive, temp, target, Path.GetFileName(Environment.ProcessPath ?? throw new InvalidOperationException(Words.T("无法确定程序路径。", "Could not determine the executable path."))));
             progress?.Report(Words.T("正在解压更新…", "Extracting the update…"));
             await Task.Run(() => ZipFile.ExtractToDirectory(archive, staged));
             if (!File.Exists(Path.Combine(staged, "SnapLine.exe")) || Directory.Exists(Path.Combine(staged, "Data"))) throw new InvalidDataException(Words.T("安装包内容无效。", "Invalid package contents."));
+            var probe = Path.Combine(target, ".snapline-update-probe");
+            try { await File.WriteAllTextAsync(probe, "ok"); File.Delete(probe); }
+            catch (Exception ex) { throw new IOException(Words.T("程序目录不可写，无法安装更新。", "The app folder is not writable, so the update cannot be installed."), ex); }
+            var acknowledgement = Path.Combine(temp, "healthy.txt");
+            var token = Guid.NewGuid().ToString("N");
             var script = Path.Combine(temp, "install.ps1");
             await File.WriteAllTextAsync(script, InstallerScript, new UTF8Encoding(true));
             var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
-            foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Source", staged, "-Target", AppContext.BaseDirectory, "-ExecutableName", Path.GetFileName(Environment.ProcessPath ?? throw new InvalidOperationException(Words.T("无法确定程序路径。", "Could not determine the executable path."))), "-ParentId", Environment.ProcessId.ToString(), "-Temp", temp }) start.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Source", staged, "-Target", target, "-ExecutableName", Path.GetFileName(Environment.ProcessPath ?? throw new InvalidOperationException(Words.T("无法确定程序路径。", "Could not determine the executable path."))), "-ParentId", Environment.ProcessId.ToString(), "-Temp", temp, "-Acknowledgement", acknowledgement, "-Token", token }) start.ArgumentList.Add(arg);
             _ = Process.Start(start) ?? throw new InvalidOperationException(Words.T("无法启动更新程序。", "Could not start the updater."));
         }
         catch { try { Directory.Delete(temp, true); } catch { } throw; }
     }
 
+    private static void EnsureFreeSpace(string path, long required)
+    {
+        if (new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).AvailableFreeSpace < required)
+            throw new IOException(Words.T("磁盘空间不足，无法安全安装更新。", "There is not enough disk space to safely install the update."));
+    }
+
+    private static void CheckInstallSpace(string archive, string temp, string target, string executableName)
+    {
+        if (!Directory.Exists(target)) throw new DirectoryNotFoundException(target);
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(target)) + Path.DirectorySeparatorChar;
+        long extracted = 0, backup = 0;
+        using (var package = ZipFile.OpenRead(archive))
+        {
+            foreach (var entry in package.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name)) continue;
+                var relative = entry.FullName.Replace('/', Path.DirectorySeparatorChar);
+                if (relative.Equals("SnapLine.exe", StringComparison.OrdinalIgnoreCase)) relative = executableName;
+                var destination = Path.GetFullPath(Path.Combine(root, relative));
+                if (!destination.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException(Words.T("安装包包含无效路径。", "The package contains an invalid path."));
+                extracted = checked(extracted + entry.Length);
+                if (File.Exists(destination)) backup = checked(backup + new FileInfo(destination).Length);
+            }
+        }
+        const long reserve = 4L * 1024 * 1024;
+        var temporaryRequired = checked(extracted + backup + reserve);
+        var targetRequired = checked(extracted + reserve);
+        if (Path.GetPathRoot(Path.GetFullPath(temp))!.Equals(Path.GetPathRoot(root), StringComparison.OrdinalIgnoreCase))
+            EnsureFreeSpace(temp, checked(temporaryRequired + targetRequired));
+        else { EnsureFreeSpace(temp, temporaryRequired); EnsureFreeSpace(target, targetRequired); }
+    }
+
     private const string InstallerScript = """
-param([string]$Source, [string]$Target, [string]$ExecutableName, [int]$ParentId, [string]$Temp)
+param([string]$Source, [string]$Target, [string]$ExecutableName, [int]$ParentId, [string]$Temp, [string]$Acknowledgement, [string]$Token)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework
 $backup = Join-Path $Temp 'backup'
 $copied = New-Object System.Collections.Generic.List[string]
-$cleanup = $false
+$started = $null
+$healthy = $false
+function Restore-Previous {
+    $rollbackFailed = $false
+    foreach ($relative in $copied) {
+        try {
+            $destination = Join-Path $Target $relative
+            $saved = Join-Path $backup $relative
+            if (Test-Path -LiteralPath $saved) { Copy-Item -LiteralPath $saved -Destination $destination -Force }
+            elseif (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
+        } catch { $rollbackFailed = $true }
+    }
+    return $rollbackFailed
+}
 try {
     Wait-Process -Id $ParentId -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $backup | Out-Null
@@ -115,30 +171,37 @@ try {
         $copied.Add($relative)
         Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
     }
-    Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target -ErrorAction Stop
-    $cleanup = $true
+    $launch = New-Object System.Diagnostics.ProcessStartInfo
+    $launch.FileName = Join-Path $Target $ExecutableName
+    $launch.WorkingDirectory = $Target
+    $launch.UseShellExecute = $false
+    $launch.Environment['SNAPLINE_UPDATE_ACK'] = $Acknowledgement
+    $launch.Environment['SNAPLINE_UPDATE_TOKEN'] = $Token
+    $started = [System.Diagnostics.Process]::Start($launch)
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    $maximum = [DateTime]::UtcNow.AddMinutes(10)
+    while ([DateTime]::UtcNow -lt $deadline -and [DateTime]::UtcNow -lt $maximum) {
+        if (Test-Path -LiteralPath $Acknowledgement) {
+            if ((Get-Content -LiteralPath $Acknowledgement -Raw).Trim() -eq $Token) { $healthy = $true; break }
+        }
+        $progress = Get-Item -LiteralPath "$Acknowledgement.progress" -ErrorAction SilentlyContinue
+        if ($progress -and $progress.LastWriteTimeUtc -gt [DateTime]::UtcNow.AddSeconds(-15)) { $deadline = [DateTime]::UtcNow.AddSeconds(60) }
+        if ($started.HasExited) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $healthy) { throw '新版未能完成初始化确认。' }
+    Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue
 } catch {
     $reason = $_.Exception.Message
-    $rollbackFailed = $false
-    foreach ($relative in $copied) {
-        try {
-            $destination = Join-Path $Target $relative
-            $saved = Join-Path $backup $relative
-            if (Test-Path -LiteralPath $saved) { Copy-Item -LiteralPath $saved -Destination $destination -Force }
-            elseif (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
-        } catch { $rollbackFailed = $true }
-    }
+    if ($started -and -not $started.HasExited) { try { $started.Kill(); $started.WaitForExit() } catch { } }
+    $rollbackFailed = Restore-Previous
     if ($rollbackFailed) {
         [System.Windows.MessageBox]::Show("更新失败，旧文件未能完全恢复。备份保存在：`n$backup`n`n$reason", 'SnapLine') | Out-Null
     } else {
         [System.Windows.MessageBox]::Show("更新失败，已恢复原文件：`n$reason", 'SnapLine') | Out-Null
-        try {
-            if (Test-Path -LiteralPath (Join-Path $Target $ExecutableName)) { Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target -ErrorAction Stop }
-            $cleanup = $true
-        } catch {
-            [System.Windows.MessageBox]::Show("无法启动原程序，备份保存在：`n$backup`n`n$($_.Exception.Message)", 'SnapLine') | Out-Null
-        }
+        try { Start-Process -FilePath (Join-Path $Target $ExecutableName) -WorkingDirectory $Target -ErrorAction Stop }
+        catch { [System.Windows.MessageBox]::Show("无法启动原程序，备份保存在：`n$backup`n`n$($_.Exception.Message)", 'SnapLine') | Out-Null }
     }
-} finally { if ($cleanup) { Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue } }
+}
 """;
 }

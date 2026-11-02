@@ -8,25 +8,28 @@ namespace SnapLine;
 
 internal static class ThemeToolTips
 {
-    internal static ToolTip Create(string text)
+    internal static void Apply(Application application)
     {
         var frame = new FrameworkElementFactory(typeof(Border));
-        frame.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0xFF, 0xFC, 0xF6)));
-        frame.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0xDF, 0xD8, 0xCA)));
-        frame.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+        frame.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0x35, 0x32, 0x2F)));
         frame.SetValue(Border.CornerRadiusProperty, new CornerRadius(7));
-        frame.SetValue(Border.PaddingProperty, new Thickness(11, 7, 11, 7));
+        frame.SetValue(Border.PaddingProperty, new Thickness(10, 6, 10, 6));
         frame.SetValue(UIElement.EffectProperty, new DropShadowEffect
         {
-            Color = Color.FromRgb(0x43, 0x39, 0x34), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.16
+            Color = Colors.Black, BlurRadius = 10, ShadowDepth = 2, Opacity = 0.18
         });
         frame.AppendChild(new FrameworkElementFactory(typeof(ContentPresenter)));
-        return new ToolTip
-        {
-            Content = text, Foreground = new SolidColorBrush(Color.FromRgb(0x47, 0x50, 0x45)),
-            FontFamily = new FontFamily("Microsoft YaHei UI"), FontSize = 12,
-            Placement = PlacementMode.Bottom, VerticalOffset = 8,
-            HasDropShadow = false, Template = new ControlTemplate(typeof(ToolTip)) { VisualTree = frame }
-        };
+        var style = new Style(typeof(ToolTip));
+        style.Setters.Add(new Setter(Control.ForegroundProperty, Brushes.White));
+        style.Setters.Add(new Setter(Control.FontFamilyProperty, new FontFamily("Microsoft YaHei UI")));
+        style.Setters.Add(new Setter(Control.FontSizeProperty, 12.0));
+        style.Setters.Add(new Setter(ToolTip.HasDropShadowProperty, false));
+        style.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate(typeof(ToolTip)) { VisualTree = frame }));
+        application.Resources[typeof(ToolTip)] = style;
     }
+
+    internal static ToolTip Create(string text) => new()
+    {
+        Content = text, Placement = PlacementMode.Bottom, VerticalOffset = 8
+    };
 }
