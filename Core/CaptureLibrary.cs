@@ -513,6 +513,16 @@ public sealed class CaptureLibrary
         var stride = checked(frame.PixelWidth * 4);
         var pixels = new byte[checked(stride * frame.PixelHeight)];
         converted.CopyPixels(pixels, stride, 0);
+        // 部分截图来源保留了颜色数据，但将整个透明度通道置零。
+        var hasAlpha = false;
+        for (var index = 3; index < pixels.Length; index += 4)
+        {
+            if (pixels[index] == 0) continue;
+            hasAlpha = true;
+            break;
+        }
+        if (!hasAlpha)
+            for (var index = 3; index < pixels.Length; index += 4) pixels[index] = 255;
         var bitmap = BitmapSource.Create(frame.PixelWidth, frame.PixelHeight, frame.DpiX, frame.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         bitmap.Freeze();
         return bitmap;

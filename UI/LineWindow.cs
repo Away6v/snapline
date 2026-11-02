@@ -1223,7 +1223,13 @@ internal sealed class LineWindow : Window
             menu.Items.Add(entry);
         }
         Add("复制图片", "Copy image", "⧉", () => _ = CopyCardAsync());
-        Add("预览", "Preview", "preview", () => Preview(capture));
+        void OpenAfterMenu(Action action)
+        {
+            menu.IsOpen = false;
+            FinishInteraction();
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, action);
+        }
+        Add("预览", "Preview", "preview", () => OpenAfterMenu(() => Preview(capture)));
         Add("钉在屏幕", "Pin to screen", "pin", () => _ = PinToScreenAsync());
         Add("用默认应用打开", "Open with default app", "open", () =>
         {
@@ -1231,7 +1237,7 @@ internal sealed class LineWindow : Window
             FinishInteraction();
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => Open(capture.Path)));
         });
-        Add("编辑", "Edit", "✎", () => _ = EditAsync(capture));
+        Add("编辑", "Edit", "✎", () => OpenAfterMenu(() => _ = EditAsync(capture)));
         Add("另存为…", "Save as…", "save", () => SaveAs(capture));
         Add("在文件夹中显示", "Show in folder", "folder", () => RevealFile(capture));
         menu.Items.Add(WarmCardMenu.Separator());
@@ -1571,10 +1577,7 @@ internal sealed class LineWindow : Window
     {
         if (captureEditors.TryGetValue(capture.Id, out var existing))
         {
-            if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
-            existing.Topmost = true;
-            existing.Topmost = false;
-            existing.Activate();
+            ShowCaptureWindow(existing);
             return;
         }
         if (!openingCaptureEditors.Add(capture.Id)) return;
@@ -1585,7 +1588,7 @@ internal sealed class LineWindow : Window
             var editor = new CaptureEditorWindow(library, capture, bitmap);
             captureEditors.Add(capture.Id, editor);
             editor.Closed += (_, _) => captureEditors.Remove(capture.Id);
-            try { editor.Topmost = true; editor.Show(); editor.Topmost = false; editor.Activate(); }
+            try { ShowCaptureWindow(editor); }
             catch { captureEditors.Remove(capture.Id); throw; }
         }
         catch (Exception ex) { notify(Words.T("无法打开图片编辑器：", "Cannot open image editor: ") + ex.Message); }
@@ -1621,8 +1624,23 @@ internal sealed class LineWindow : Window
             var preview = new Window { Title = App.DisplayName + " · " + Path.GetFileName(capture.Path), Width = 900, Height = 620, WindowStartupLocation = WindowStartupLocation.CenterScreen, Background = AppTheme.Surface };
             preview.Content = new Image { Source = image, Stretch = Stretch.Uniform, Margin = new Thickness(16) };
             preview.KeyDown += (_, e) => { if (e.Key == Key.Escape) preview.Close(); };
-            preview.Show();
+            ShowCaptureWindow(preview);
         }
         catch (Exception ex) { notify(Words.T("无法预览：", "Cannot preview: ") + ex.Message); }
+    }
+
+    private void ShowCaptureWindow(Window window)
+    {
+        if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
+        window.Topmost = true;
+        if (!window.IsVisible) window.Show();
+        window.Activate();
+        // 等菜单关闭和窗口布局完成后再取消置顶，避免窗口落在其他程序后面。
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            if (!window.IsVisible) return;
+            window.Activate();
+            window.Topmost = false;
+        }));
     }
 }
