@@ -70,7 +70,7 @@ internal sealed class TrayPanelWindow : Window
     private double maximumHeight = 560;
     private System.Drawing.Point? anchor;
 
-    private enum Page { Home, Folders, Appearance, Language, Shortcut, Search, Backup }
+    private enum Page { Home, Folders, Appearance, Language, Collection, Shortcut, Search, Backup }
 
     internal TrayPanelWindow(Preferences preferences, Func<int> captureCount, Func<int> textCount, Func<Capture[]> previewCaptures, Func<bool> lineVisible,
         Action toggleLine, Action openInbox, Action exit, Func<bool, uint, uint, bool> registerShortcut,
@@ -213,6 +213,7 @@ internal sealed class TrayPanelWindow : Window
             Page.Folders => Folders(),
             Page.Appearance => AppearancePage(),
             Page.Language => LanguagePage(),
+            Page.Collection => CollectionPage(),
             Page.Search => SearchPage(),
             Page.Backup => BackupPage(),
             _ => Shortcut()
@@ -287,6 +288,7 @@ internal sealed class TrayPanelWindow : Window
             Page.Folders => Words.T("监控目录", "Watched folders"),
             Page.Appearance => Words.T("外观", "Appearance"),
             Page.Language => Words.T("界面语言", "Language"),
+            Page.Collection => Words.T("收集", "Collection"),
             Page.Search => Words.T("搜索", "Search"),
             Page.Backup => Words.T("备份", "Backup"),
             _ => Words.T("快捷键设置", "Keyboard shortcuts")
@@ -319,12 +321,12 @@ internal sealed class TrayPanelWindow : Window
         actions.ColumnDefinitions.Add(new ColumnDefinition());
         actions.ColumnDefinitions.Add(new ColumnDefinition());
         var isLineVisible = lineVisible();
-        var main = IconButton(Words.T(isLineVisible ? "收起晾衣绳" : "展开晾衣绳", isLineVisible ? "Hide line" : "Show line"), PrimaryStyle,
+        var main = IconButton(Words.T(isLineVisible ? "收起" : "展开", isLineVisible ? "Hide" : "Show"), PrimaryStyle,
             isLineVisible ? "panel-bottom-close" : "panel-top-open", Brushes.White, 38);
         main.Margin = new Thickness(0, 0, 4, 0);
         main.Click += (_, _) => { Close(); toggleLine(); };
         actions.Children.Add(main);
-        var quit = IconButton(Words.T("退出 " + App.DisplayName, "Quit " + App.DisplayName), DangerStyle, "power-off", Alert, 38);
+        var quit = IconButton(Words.T("退出", "Quit"), DangerStyle, "power-off", Alert, 38);
         quit.Margin = new Thickness(4, 0, 0, 0);
         quit.Click += (_, _) => { Close(); exit(); };
         Grid.SetColumn(quit, 1);
@@ -452,7 +454,7 @@ internal sealed class TrayPanelWindow : Window
         panel.Children.Add(Gap(10));
         panel.Children.Add(Rule());
         panel.Children.Add(Gap(5));
-        panel.Children.Add(PauseRow());
+        panel.Children.Add(NavigationRow(Words.T("收集", "Collection"), IsCollectionPaused() ? Words.T("已暂停", "Paused") : Words.T("收集中", "Collecting"), Page.Collection));
         panel.Children.Add(ToggleRow(Words.T("登录 Windows 后启动", "Start with Windows"), StartupEnabled(), () =>
         {
             try { SetStartup(!StartupEnabled()); message = null; }
@@ -512,41 +514,21 @@ internal sealed class TrayPanelWindow : Window
 
     private bool IsCollectionPaused() => preferences.CollectionPausedUntil is DateTime until && (until == DateTime.MaxValue || until > DateTime.UtcNow);
 
-    private FrameworkElement PauseRow()
+    private StackPanel CollectionPage()
     {
-        var paused = IsCollectionPaused();
-        var button = Button(Words.T("收集", "Collection"), RowStyle, 38);
-        var row = new DockPanel { LastChildFill = true };
-        row.Children.Add(Label(paused ? Words.T("已暂停", "Paused") : Words.T("收集中", "Collecting"), 11, paused ? Alert : Muted, FontWeights.Medium, TextAlignment.Right));
-        DockPanel.SetDock(row.Children[0], Dock.Right);
-        row.Children.Add(Label(Words.T("收集", "Collection"), 12, Ink, FontWeights.Medium));
-        button.Content = row;
-        System.Windows.Automation.AutomationProperties.SetName(button, Words.T("收集设置", "Collection settings"));
-        button.Click += (_, _) =>
+        var panel = Subpage();
+        void Add(string zh, string en, Func<DateTime?> value, bool selected)
         {
-            var menu = WarmCardMenu.Create();
-            menu.PlacementTarget = button;
-            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Custom;
-            menu.CustomPopupPlacementCallback = (popupSize, targetSize, _) => new[]
-            {
-                new System.Windows.Controls.Primitives.CustomPopupPlacement(
-                    new Point(targetSize.Width - popupSize.Width, targetSize.Height),
-                    System.Windows.Controls.Primitives.PopupPrimaryAxis.Vertical)
-            };
-            void Add(string zh, string en, Func<DateTime?> value)
-            {
-                var item = WarmCardMenu.TextItem(Words.T(zh, en));
-                item.Click += async (_, _) => { preferences.CollectionPausedUntil = value(); await Persist(false, false); Navigate(Page.Home); };
-                menu.Items.Add(item);
-            }
-            Add("恢复收集", "Resume collecting", () => null);
-            Add("暂停 15 分钟", "Pause for 15 minutes", () => DateTime.UtcNow.AddMinutes(15));
-            Add("暂停 1 小时", "Pause for 1 hour", () => DateTime.UtcNow.AddHours(1));
-            Add("保持暂停", "Keep paused", () => DateTime.MaxValue);
-            button.ContextMenu = menu;
-            menu.IsOpen = true;
-        };
-        return button;
+            var choice = ChoiceButton(Words.T(zh, en), selected);
+            choice.Margin = new Thickness(0, 0, 0, 5);
+            choice.Click += async (_, _) => { preferences.CollectionPausedUntil = value(); await Persist(false, false); Navigate(Page.Home); };
+            panel.Children.Add(choice);
+        }
+        Add("恢复收集", "Resume collecting", () => null, !IsCollectionPaused());
+        Add("暂停 15 分钟", "Pause for 15 minutes", () => DateTime.UtcNow.AddMinutes(15), false);
+        Add("暂停 1 小时", "Pause for 1 hour", () => DateTime.UtcNow.AddHours(1), false);
+        Add("保持暂停", "Keep paused", () => DateTime.MaxValue, preferences.CollectionPausedUntil == DateTime.MaxValue);
+        return panel;
     }
 
     private void UpdateUpdateSection()
@@ -787,7 +769,7 @@ internal sealed class TrayPanelWindow : Window
         foreach (var (code, name) in new[] { ("zh", "简体中文"), ("en", "English") })
         {
             var selected = preferences.Language == code;
-            var choice = Button(selected ? $"✓  {name}" : $"○  {name}", selected ? SoftStyle : RowStyle, 43);
+            var choice = ChoiceButton(name, selected);
             choice.Margin = new Thickness(0, 0, 0, 5);
             choice.Click += async (_, _) =>
             {
@@ -820,7 +802,7 @@ internal sealed class TrayPanelWindow : Window
                 Background = Surface
             };
             var contents = new StackPanel();
-            contents.Children.Add(Label((selected ? "✓  " : "○  ") + title, 12, Ink, FontWeights.Medium));
+            contents.Children.Add(ChoiceLabel(title, selected));
             contents.Children.Add(Gap(8));
             contents.Children.Add(AppearancePreview(code));
             frame.Child = contents;
@@ -1010,6 +992,28 @@ internal sealed class TrayPanelWindow : Window
         Height = height,
         HorizontalContentAlignment = HorizontalAlignment.Center
     };
+
+    private static Button ChoiceButton(string text, bool selected)
+    {
+        var button = new Button { Style = selected ? SoftStyle : RowStyle, Height = 43, Content = ChoiceLabel(text, selected) };
+        System.Windows.Automation.AutomationProperties.SetName(button, text);
+        return button;
+    }
+
+    private static FrameworkElement ChoiceLabel(string text, bool selected)
+    {
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        var indicator = new Border
+        {
+            Width = 16, Height = 16, CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1.5), BorderBrush = selected ? Accent : Muted,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 9, 0)
+        };
+        if (selected) indicator.Child = new Ellipse { Width = 8, Height = 8, Fill = Accent };
+        content.Children.Add(indicator);
+        content.Children.Add(Label(text, 12, Ink, FontWeights.Medium));
+        return content;
+    }
 
     private static Button IconButton(string text, Style style, string geometry, Brush color, double height)
     {
