@@ -15,6 +15,8 @@ namespace SnapLine;
 
 internal sealed record UpdateRelease(string Version, string Notes, string PackageUrl, string? Digest, string? ChecksumUrl);
 
+internal sealed record UpdateProgress(string Text, bool Downloading = false, double? Percent = null);
+
 internal static class UpdateService
 {
     private static readonly HttpClient Client = CreateClient();
@@ -63,7 +65,7 @@ internal static class UpdateService
         return new UpdateRelease(tag, root.GetProperty("body").GetString() ?? "", package, digest, checksum);
     }
 
-    internal static async Task DownloadAndInstallAsync(UpdateRelease release, IProgress<string>? progress = null)
+    internal static async Task DownloadAndInstallAsync(UpdateRelease release, IProgress<UpdateProgress>? progress = null)
     {
         var temp = Path.Combine(Path.GetTempPath(), "SnapLine-update-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
@@ -72,12 +74,29 @@ internal static class UpdateService
             var archive = Path.Combine(temp, "package.zip");
             using var response = await Client.GetAsync(release.PackageUrl, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength is long downloadSize)
-                EnsureFreeSpace(temp, checked(downloadSize + 4L * 1024 * 1024));
+            var downloadSize = response.Content.Headers.ContentLength;
+            if (downloadSize is > 0)
+                EnsureFreeSpace(temp, checked(downloadSize.Value + 4L * 1024 * 1024));
+            var downloadText = Words.T("正在下载更新…", "Downloading the update…");
+            progress?.Report(new UpdateProgress(downloadText, true, downloadSize is > 0 ? 0 : null));
             await using (var output = File.Create(archive))
             await using (var input = await response.Content.ReadAsStreamAsync())
-                await input.CopyToAsync(output);
-            progress?.Report(Words.T("正在校验更新…", "Verifying the update…"));
+            {
+                var buffer = new byte[81920];
+                long downloaded = 0;
+                var timer = Stopwatch.StartNew();
+                int count;
+                while ((count = await input.ReadAsync(buffer)) > 0)
+                {
+                    await output.WriteAsync(buffer.AsMemory(0, count));
+                    downloaded += count;
+                    if (timer.ElapsedMilliseconds < 100) continue;
+                    progress?.Report(new UpdateProgress(downloadText, true, downloadSize is > 0 ? Math.Min(100, downloaded * 100.0 / downloadSize.Value) : null));
+                    timer.Restart();
+                }
+                if (downloadSize is > 0 && downloaded != downloadSize.Value) throw new IOException(Words.T("更新下载不完整。", "The update download is incomplete."));
+            }
+            progress?.Report(new UpdateProgress(Words.T("正在校验更新…", "Verifying the update…")));
             var checksum = release.Digest ?? (await Client.GetStringAsync(release.ChecksumUrl!)).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
             await using var file = File.OpenRead(archive);
             var actual = Convert.ToHexString(await SHA256.HashDataAsync(file));
@@ -86,7 +105,7 @@ internal static class UpdateService
             var staged = Path.Combine(temp, "package");
             var target = AppContext.BaseDirectory;
             CheckInstallSpace(archive, temp, target, Path.GetFileName(Environment.ProcessPath ?? throw new InvalidOperationException(Words.T("无法确定程序路径。", "Could not determine the executable path."))));
-            progress?.Report(Words.T("正在解压更新…", "Extracting the update…"));
+            progress?.Report(new UpdateProgress(Words.T("正在解压更新…", "Extracting the update…")));
             await Task.Run(() => ZipFile.ExtractToDirectory(archive, staged));
             if (!File.Exists(Path.Combine(staged, "SnapLine.exe")) || Directory.Exists(Path.Combine(staged, "Data"))) throw new InvalidDataException(Words.T("安装包内容无效。", "Invalid package contents."));
             var probe = Path.Combine(target, ".snapline-update-probe");

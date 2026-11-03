@@ -167,6 +167,8 @@ public sealed class App : Application
         if (updateStatus.Busy) return;
         updateStatus.Busy = true;
         updateStatus.Release = null;
+        updateStatus.Downloading = false;
+        updateStatus.Percent = null;
         updateStatus.Error = false;
         updateStatus.Text = Words.T("正在检查更新…", "Checking for updates…");
         trayPanel?.RefreshUpdate();
@@ -194,13 +196,17 @@ public sealed class App : Application
         if (updateStatus.Busy || release == null) return;
         updateStatus.Busy = true;
         updateStatus.Error = false;
-        updateStatus.Text = Words.T("正在下载并校验更新，请稍候…", "Downloading and verifying the update…");
+        updateStatus.Downloading = true;
+        updateStatus.Percent = null;
+        updateStatus.Text = Words.T("正在下载更新…", "Downloading the update…");
         trayPanel?.RefreshUpdate();
         try
         {
-            var progress = new Progress<string>(text =>
+            var progress = new Progress<UpdateProgress>(value =>
             {
-                updateStatus.Text = text;
+                updateStatus.Text = value.Text;
+                updateStatus.Downloading = value.Downloading;
+                updateStatus.Percent = value.Percent;
                 trayPanel?.RefreshUpdate();
             });
             await UpdateService.DownloadAndInstallAsync(release, progress);
@@ -209,6 +215,8 @@ public sealed class App : Application
         catch (Exception ex)
         {
             updateStatus.Error = true;
+            updateStatus.Downloading = false;
+            updateStatus.Percent = null;
             updateStatus.Text = Words.T("更新失败：", "Update failed: ") + ex.Message;
             updateStatus.Busy = false;
             trayPanel?.RefreshUpdate();
@@ -271,6 +279,8 @@ internal sealed class UpdateStatus
 {
     internal bool Busy;
     internal bool Error;
+    internal bool Downloading;
+    internal double? Percent;
     internal string? Text;
     internal UpdateRelease? Release;
 }

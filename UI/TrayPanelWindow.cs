@@ -67,6 +67,8 @@ internal sealed class TrayPanelWindow : Window
     private ComboBox? openCapacityChoice;
     private Button? updateButton;
     private Border? updateDetails;
+    private ProgressBar? updateProgress;
+    private TextBlock? updatePercent;
     private Page currentPage;
     private bool folderDialogOpen;
     private bool wasActivated;
@@ -76,7 +78,7 @@ internal sealed class TrayPanelWindow : Window
     private double maximumHeight = 560;
     private System.Drawing.Point? anchor;
 
-    private enum Page { Home, Folders, Appearance, Language, Collection, Shortcut, Search, Backup }
+    private enum Page { Home, Folders, Appearance, Language, Collection, Shortcut, Search, Backup, Update }
 
     internal TrayPanelWindow(Preferences preferences, Func<int> captureCount, Func<int> textCount, Func<Capture[]> previewCaptures, Func<bool> lineVisible,
         Action toggleLine, Action openInbox, Action exit, Func<bool, uint, uint, bool> registerShortcut,
@@ -250,6 +252,7 @@ internal sealed class TrayPanelWindow : Window
             Page.Collection => CollectionPage(),
             Page.Search => SearchPage(),
             Page.Backup => BackupPage(),
+            Page.Update => UpdatePage(),
             _ => Shortcut()
         };
         smoothScroll.Stop();
@@ -290,9 +293,15 @@ internal sealed class TrayPanelWindow : Window
 
     internal void RefreshUpdate()
     {
-        if (currentPage != Page.Home || !IsVisible) return;
+        if (currentPage != Page.Update || !IsVisible) return;
+        if (updateStatus.Downloading && updateProgress != null && updatePercent != null)
+        {
+            updateProgress.IsIndeterminate = !updateStatus.Percent.HasValue;
+            updateProgress.Value = updateStatus.Percent ?? 0;
+            updatePercent.Text = updateStatus.Percent is double percent ? $"{percent:0}%" : "";
+            return;
+        }
         UpdateUpdateSection();
-        FitHeight();
     }
 
     private void FitHeight()
@@ -345,6 +354,7 @@ internal sealed class TrayPanelWindow : Window
             Page.Collection => Words.T("收集", "Collection"),
             Page.Search => Words.T("搜索", "Search"),
             Page.Backup => Words.T("备份", "Backup"),
+            Page.Update => Words.T("检查更新", "Check for updates"),
             _ => Words.T("快捷键设置", "Keyboard shortcuts")
         };
         var bar = new Grid { Margin = new Thickness(0, 0, 0, 10) };
@@ -523,17 +533,9 @@ internal sealed class TrayPanelWindow : Window
         panel.Children.Add(NavigationRow(Words.T("外观", "Appearance"), AppearanceText(), Page.Appearance));
         panel.Children.Add(NavigationRow(Words.T("界面语言", "Language"), preferences.Language == "zh" ? "简体中文" : "English", Page.Language));
         panel.Children.Add(NavigationRow(Words.T("快捷键设置", "Keyboard shortcuts"), "", Page.Shortcut));
-        updateButton = Button(Words.T("检查更新", "Check for updates"), RowStyle, 38);
-        updateButton.HorizontalContentAlignment = HorizontalAlignment.Left;
-        updateButton.Click += (_, _) => checkUpdates();
-        panel.Children.Add(updateButton);
-        updateDetails = new Border
-        {
-            Background = Soft, BorderBrush = Outline, BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12), Padding = new Thickness(14), Margin = new Thickness(0, 4, 0, 5)
-        };
-        panel.Children.Add(updateDetails);
-        UpdateUpdateSection();
+        var updateRow = NavigationRow(Words.T("检查更新", "Check for updates"), "", Page.Update);
+        updateRow.Click += (_, _) => { if (updateStatus.Text == null && !updateStatus.Busy) checkUpdates(); };
+        panel.Children.Add(updateRow);
         if (!string.IsNullOrWhiteSpace(message))
         {
             panel.Children.Add(Label(message, 10, Alert));
@@ -590,6 +592,25 @@ internal sealed class TrayPanelWindow : Window
         return panel;
     }
 
+    private StackPanel UpdatePage()
+    {
+        var panel = new StackPanel();
+        updateDetails = new Border
+        {
+            Background = Soft, BorderBrush = Outline, BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12), Padding = new Thickness(14)
+        };
+        panel.Children.Add(updateDetails);
+        updateButton = Button(Words.T("重新检查", "Check again"), SoftStyle, 38);
+        updateButton.Margin = new Thickness(0, 12, 0, 0);
+        updateButton.Click += (_, _) => checkUpdates();
+        panel.Children.Add(updateButton);
+        updateProgress = null;
+        updatePercent = null;
+        UpdateUpdateSection();
+        return panel;
+    }
+
     private void UpdateUpdateSection()
     {
         if (updateButton == null || updateDetails == null) return;
@@ -601,6 +622,8 @@ internal sealed class TrayPanelWindow : Window
             updateDetails.Child = null;
             return;
         }
+        updateProgress = null;
+        updatePercent = null;
         var details = new StackPanel();
         if (updateStatus.Release != null && !updateStatus.Busy)
         {
@@ -634,7 +657,7 @@ internal sealed class TrayPanelWindow : Window
             };
             var notes = new ScrollViewer
             {
-                MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                MaxHeight = 260, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
                 VerticalContentAlignment = VerticalAlignment.Top, Content = body
             };
@@ -654,6 +677,23 @@ internal sealed class TrayPanelWindow : Window
             var status = Label(updateStatus.Text!, 12, updateStatus.Error ? Alert : AppTheme.AccentDark, FontWeights.Medium);
             status.LineHeight = 20;
             details.Children.Add(status);
+            if (updateStatus.Downloading)
+            {
+                var progress = new ProgressBar
+                {
+                    Minimum = 0, Maximum = 100, Height = 6, Margin = new Thickness(0, 10, 0, 0),
+                    Foreground = Accent, Background = Outline,
+                    IsIndeterminate = !updateStatus.Percent.HasValue,
+                    Value = updateStatus.Percent ?? 0
+                };
+                System.Windows.Automation.AutomationProperties.SetName(progress, Words.T("更新下载进度", "Update download progress"));
+                updateProgress = progress;
+                details.Children.Add(progress);
+                updatePercent = Label(updateStatus.Percent is double percent ? $"{percent:0}%" : "", 11, Muted);
+                updatePercent.Margin = new Thickness(0, 4, 0, 0);
+                updatePercent.HorizontalAlignment = HorizontalAlignment.Right;
+                details.Children.Add(updatePercent);
+            }
         }
         updateDetails.Child = details;
     }
