@@ -120,7 +120,11 @@ internal sealed class LineWindow : Window
         SizeChanged += (_, _) => UpdateCardPositions();
         Loaded += (_, _) => QueueCardPositionUpdate();
         root.Children.Add(scroll);
-        CompositionTarget.Rendering += UpdateEdgeBlur;
+        IsVisibleChanged += (_, _) =>
+        {
+            CompositionTarget.Rendering -= UpdateEdgeBlur;
+            if (IsVisible && !closing) CompositionTarget.Rendering += UpdateEdgeBlur;
+        };
         SourceInitialized += (_, _) =>
         {
             handle = new WindowInteropHelper(this).Handle;

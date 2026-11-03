@@ -107,18 +107,27 @@ public sealed class CaptureLibrary
     public async Task RestoreAsync()
     {
         var unavailable = 0;
-        foreach (var item in state.Captures.ToArray())
+        var items = state.Captures.ToArray();
+        // 限制同时解码的大图数量，缩短恢复时间并控制峰值内存。
+        for (var offset = 0; offset < items.Length; offset += 2)
         {
-            try
+            var batch = items.Skip(offset).Take(2).Select(item => Task.Run(() =>
             {
-                var image = await Task.Run(() => Read(item.Path));
-                item.Thumbnail = image.Thumb;
-                item.Hash = image.Hash;
-                item.PixelWidth = image.Full.PixelWidth;
-                item.PixelHeight = image.Full.PixelHeight;
-
+                try
+                {
+                    var image = Read(item.Path);
+                    return (Item: item, Thumb: image.Thumb, Hash: image.Hash, Width: image.Full.PixelWidth, Height: image.Full.PixelHeight);
+                }
+                catch { return (Item: item, Thumb: (BitmapSource?)null, Hash: (string?)null, Width: 0, Height: 0); }
+            })).ToArray();
+            foreach (var result in await Task.WhenAll(batch))
+            {
+                if (result.Thumb == null) { result.Item.Thumbnail = null; unavailable++; continue; }
+                result.Item.Thumbnail = result.Thumb;
+                result.Item.Hash = result.Hash!;
+                result.Item.PixelWidth = result.Width;
+                result.Item.PixelHeight = result.Height;
             }
-            catch { item.Thumbnail = null; unavailable++; }
         }
         if (unavailable > 0) Error?.Invoke(Words.T($"{unavailable} 张图片暂时无法读取，记录已保留并会自动重试。", $"{unavailable} images are unavailable. Their records are kept and will be retried."));
         Save();

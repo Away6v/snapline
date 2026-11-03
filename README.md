@@ -10,8 +10,8 @@
 
 前往 [Releases](https://github.com/Away6v/snapline/releases) 下载：
 
-- 普通 Intel / AMD 电脑：`SnapLine-0.2.1-win-x64-Setup.exe`。
-- Windows on ARM 电脑：`SnapLine-0.2.1-win-arm64-Setup.exe`。
+- 普通 Intel / AMD 电脑：选择名称以 `win-x64-Setup.exe` 结尾的安装程序。
+- Windows on ARM 电脑：选择名称以 `win-arm64-Setup.exe` 结尾的安装程序。
 
 下载并运行 Setup EXE 安装，无须安装 .NET 或管理员权限。默认安装在当前用户的本地程序目录，设置和数据保存在安装目录的 `Data` 文件夹中，卸载时保留。发布页也提供可直接运行的 ZIP 包，用于便携使用和自动更新。首次启动说明会提示剪贴板图片收集已开启；程序随后驻留系统托盘。
 
