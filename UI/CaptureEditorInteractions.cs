@@ -51,14 +51,14 @@ internal sealed partial class CaptureEditorWindow
     {
         const string xaml = """
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="ToggleButton">
-                <Setter Property="Width" Value="32"/><Setter Property="Height" Value="32"/><Setter Property="Foreground" Value="#273644"/>
+                <Setter Property="Width" Value="32"/><Setter Property="Height" Value="32"/><Setter Property="Foreground" Value="{DynamicResource ThemeInk}"/>
                 <Setter Property="FocusVisualStyle" Value="{x:Null}"/><Setter Property="Cursor" Value="Hand"/>
                 <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Frame" Background="#F5F9FC" BorderBrush="Transparent" BorderThickness="1" CornerRadius="7"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                    <Border x:Name="Frame" Background="{DynamicResource ThemeSoft}" BorderBrush="Transparent" BorderThickness="1" CornerRadius="7"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="#E8F5FE"/></Trigger>
-                        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="#D5EDFC"/><Setter Property="Foreground" Value="#0B78B4"/></Trigger>
-                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="#0B78B4"/></Trigger>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource ThemeHover}"/></Trigger>
+                        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource ThemePressed}"/><Setter Property="Foreground" Value="{DynamicResource ThemeAccentDark}"/></Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource ThemeAccentDark}"/></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate></Setter.Value></Setter>
             </Style>

@@ -127,7 +127,15 @@ public static class Storage
         if (state.Preferences.TextCapacity is not (25 or 50 or 100)) state.Preferences.TextCapacity = 100;
         if (state.Preferences.ImageScalePercent is not (5 or 10 or 15 or 20 or 25)) state.Preferences.ImageScalePercent = 10;
         if (state.Preferences.DisplayMode is not ("text" or "screenshot")) state.Preferences.DisplayMode = "screenshot";
-        if (state.Preferences.Appearance is not ("hemp" or "classic")) state.Preferences.Appearance = "hemp";
+        // 将已移除的近似主题映射到最接近的保留主题。
+        state.Preferences.Appearance = state.Preferences.Appearance switch
+        {
+            "candy" => "classic",
+            "amber" or "brass" => "hemp",
+            "seaSalt" => "denim",
+            var appearance => appearance
+        };
+        if (state.Preferences.Appearance is not ("hemp" or "classic" or "forest" or "graphite" or "denim" or "sakura" or "silver")) state.Preferences.Appearance = "hemp";
         state.Preferences.WatchFolders = state.Preferences.WatchFolders.Where(folder => !string.IsNullOrWhiteSpace(folder) && System.IO.Path.IsPathFullyQualified(folder)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var captureIds = new HashSet<string>(StringComparer.Ordinal);
         state.Captures = state.Captures.Where(capture => capture != null && !string.IsNullOrWhiteSpace(capture.Id)

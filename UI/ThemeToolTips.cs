@@ -11,7 +11,7 @@ internal static class ThemeToolTips
     internal static void Apply(Application application)
     {
         var frame = new FrameworkElementFactory(typeof(Border));
-        frame.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0x35, 0x32, 0x2F)));
+        frame.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0x35, 0x3B, 0x40)));
         frame.SetValue(Border.CornerRadiusProperty, new CornerRadius(7));
         frame.SetValue(Border.PaddingProperty, new Thickness(10, 6, 10, 6));
         frame.SetValue(UIElement.EffectProperty, new DropShadowEffect

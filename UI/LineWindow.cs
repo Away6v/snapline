@@ -815,7 +815,7 @@ internal sealed class LineWindow : Window
         blurred.OpacityMask = blurMask;
         var frost = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(250, 248, 243)),
+            Background = LineAppearance.CardSurface(preferences.Appearance),
             CornerRadius = card.CornerRadius,
             Opacity = 0.36,
             OpacityMask = blurMask,

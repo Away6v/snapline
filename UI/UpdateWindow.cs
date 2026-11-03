@@ -23,7 +23,7 @@ internal sealed class UpdateWindow : Window
         install.Click += (_, _) => DialogResult = true;
         actions.Children.Add(cancel); actions.Children.Add(install);
         DockPanel.SetDock(actions, Dock.Bottom); layout.Children.Add(actions);
-        var notes = new TextBox { Text = string.IsNullOrWhiteSpace(release.Notes) ? Words.T("此版本没有提供更新说明。", "No release notes were provided.") : release.Notes, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(10), BorderBrush = AppTheme.Outline, Background = Brushes.White };
+        var notes = new TextBox { Text = string.IsNullOrWhiteSpace(release.Notes) ? Words.T("此版本没有提供更新说明。", "No release notes were provided.") : release.Notes, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(10), BorderBrush = AppTheme.Outline, Background = AppTheme.Surface };
         layout.Children.Add(notes); Content = layout;
     }
 }

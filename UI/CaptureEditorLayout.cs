@@ -26,7 +26,7 @@ internal sealed partial class CaptureEditorWindow
     private readonly StackPanel shapeOptions = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 14, 8) };
     private readonly StackPanel textOptions = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 14, 8) };
     private readonly StackPanel toolbarRight = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-    private static readonly Brush EditorInk = new SolidColorBrush(Color.FromRgb(49, 45, 42));
+    private static readonly Brush EditorInk = AppTheme.Ink;
 
     private static LucideIcon EditorIcon(string name, Brush? color = null) => new(name, color ?? EditorInk);
 
@@ -54,17 +54,17 @@ internal sealed partial class CaptureEditorWindow
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="HOVER"/></Trigger>
-                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="#C96B50"/></Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource ThemeAccentDark}"/></Trigger>
                         <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate></Setter.Value></Setter>
             </Style>
             """;
-        return (Style)System.Windows.Markup.XamlReader.Parse(xaml.Replace("BACKGROUND", primary ? "#DD6B50" : "#FFFCF7").Replace("BORDER", primary ? "#CF6046" : "#E6DFD5").Replace("HOVER", primary ? "#C85C43" : "#F1EBE2"));
+        return (Style)System.Windows.Markup.XamlReader.Parse(xaml.Replace("BACKGROUND", primary ? "{DynamicResource ThemeAccent}" : "{DynamicResource ThemeSurface}").Replace("BORDER", primary ? "{DynamicResource ThemeAccentDark}" : "{DynamicResource ThemeOutline}").Replace("HOVER", primary ? "{DynamicResource ThemeAccentHover}" : "{DynamicResource ThemeHover}"));
     }
 
     private static Border Separator() => new() { Width = 1, Height = 24, Background = AppTheme.Outline, Margin = new Thickness(5, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center };
-    private static Border PopupFrame(UIElement child) => new() { Background = Brushes.White, BorderBrush = AppTheme.Outline, BorderThickness = new Thickness(1),
+    private static Border PopupFrame(UIElement child) => new() { Background = AppTheme.Surface, BorderBrush = AppTheme.Outline, BorderThickness = new Thickness(1),
         CornerRadius = new CornerRadius(8), Padding = new Thickness(5), Margin = new Thickness(0, 4, 0, 0), Child = child,
         Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Colors.Black, BlurRadius = 12, ShadowDepth = 2, Opacity = 0.14 } };
 
@@ -72,7 +72,7 @@ internal sealed partial class CaptureEditorWindow
     {
         root.Margin = new Thickness(0);
         var header = new DockPanel { LastChildFill = true, Margin = new Thickness(10, 6, 10, 6) };
-        var toolbarFrame = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(32), Margin = new Thickness(18, 5, 18, 18), Padding = new Thickness(7), HorizontalAlignment = HorizontalAlignment.Center, Child = header, Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Opacity = 0.18 } };
+        var toolbarFrame = new Border { Background = AppTheme.Surface, CornerRadius = new CornerRadius(32), Margin = new Thickness(18, 5, 18, 18), Padding = new Thickness(7), HorizontalAlignment = HorizontalAlignment.Center, Child = header, Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Opacity = 0.18 } };
         DockPanel.SetDock(toolbarFrame, Dock.Bottom); root.Children.Add(toolbarFrame);
         DockPanel.SetDock(toolbarRight, Dock.Right); header.Children.Add(toolbarRight);
         header.Children.Add(toolbarLeft);
@@ -102,7 +102,7 @@ internal sealed partial class CaptureEditorWindow
             if (item.tool is not Tool.View) group.Children.Add(arrow);
             var groupFrame = new Border { Child = group, Background = Brushes.Transparent, BorderBrush = Brushes.Transparent, BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(8), Margin = new Thickness(3, 0, 3, 0) };
             toolbarLeft.Children.Add(groupFrame);
-            void UpdateGroup() { var active = select.IsChecked == true; groupFrame.Background = active ? new SolidColorBrush(Color.FromRgb(241, 235, 226)) : Brushes.Transparent; icon.Stroke = EditorInk; }
+            void UpdateGroup() { var active = select.IsChecked == true; groupFrame.Background = active ? AppTheme.Hover : Brushes.Transparent; icon.Stroke = EditorInk; }
             select.Checked += (_, _) => UpdateGroup(); select.Unchecked += (_, _) => UpdateGroup();
             toolButtons.Add(item.tool, select); toolIcons.Add(item.tool, icon);
             select.Checked += (_, _) => { if (tool != item.tool) { DeactivateText(); CancelCrop(); CancelDrawing(); } tool = item.tool; UpdateToolOptions(); };
@@ -125,7 +125,7 @@ internal sealed partial class CaptureEditorWindow
             var index = i; var entry = paletteColors[i]; colors.Items.Add(entry.Item2);
             var circle = new Grid { Width = 24, Height = 24 };
             circle.Children.Add(new System.Windows.Shapes.Ellipse { Fill = entry.Item3, Stroke = new SolidColorBrush(Color.FromRgb(205, 218, 230)), StrokeThickness = 1 });
-            var check = new LucideIcon("check", index is 2 or 3 or 5 ? EditorInk : Brushes.White, 14) { Visibility = Visibility.Collapsed };
+            var check = new LucideIcon("check", index is 2 or 3 or 5 ? new SolidColorBrush(Color.FromRgb(49, 45, 42)) : Brushes.White, 14) { Visibility = Visibility.Collapsed };
             circle.Children.Add(check); colorChecks.Add(check);
             var name = Words.T(entry.Item1, entry.Item2);
             var btn = new Button { Width = 38, Height = 38, Padding = new Thickness(2), Margin = new Thickness(1), Content = circle, Style = EditorButtonStyle, ToolTip = name };
@@ -143,12 +143,12 @@ internal sealed partial class CaptureEditorWindow
             for (var i = 0; i < colorButtons.Count; i++)
             {
                 var selected = colors.SelectedIndex == i;
-                colorButtons[i].BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(0, 142, 255) : Color.FromRgb(216, 229, 246));
-                colorButtons[i].Background = new SolidColorBrush(selected ? Color.FromRgb(229, 245, 255) : Color.FromRgb(249, 252, 255));
+                colorButtons[i].BorderBrush = selected ? AppTheme.Accent : AppTheme.Outline;
+                colorButtons[i].Background = selected ? AppTheme.Hover : AppTheme.Soft;
                 colorChecks[i].Visibility = selected ? Visibility.Visible : Visibility.Collapsed;
             }
-            customButton.BorderBrush = new SolidColorBrush(colors.SelectedIndex == 6 ? Color.FromRgb(0, 142, 255) : Color.FromRgb(216, 229, 246));
-            customButton.Background = new SolidColorBrush(colors.SelectedIndex == 6 ? Color.FromRgb(229, 245, 255) : Color.FromRgb(249, 252, 255));
+            customButton.BorderBrush = colors.SelectedIndex == 6 ? AppTheme.Accent : AppTheme.Outline;
+            customButton.Background = colors.SelectedIndex == 6 ? AppTheme.Hover : AppTheme.Soft;
         }
         colors.SelectionChanged += (_, _) => RefreshColor();
         customButton.Click += (_, _) =>
@@ -172,7 +172,7 @@ internal sealed partial class CaptureEditorWindow
             widthButton.Click += (_, _) => strokeSlider.SetValue(lineWidth); paletteRow.Children.Add(widthButton);
         }
         paletteRow.Children.Add(colorButton);
-        var paletteFrame = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(28), Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 0, 0, 4), HorizontalAlignment = HorizontalAlignment.Center, Child = paletteRow, Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 14, ShadowDepth = 3, Opacity = 0.18 } };
+        var paletteFrame = new Border { Background = AppTheme.Surface, CornerRadius = new CornerRadius(28), Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 0, 0, 4), HorizontalAlignment = HorizontalAlignment.Center, Child = paletteRow, Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 14, ShadowDepth = 3, Opacity = 0.18 } };
         DockPanel.SetDock(paletteFrame, Dock.Bottom); root.Children.Add(paletteFrame);
 
         cropApply = EditorButton("完成裁剪", "Apply crop", "check", ApplyCrop, true);
@@ -202,7 +202,7 @@ internal sealed partial class CaptureEditorWindow
         statusRight.Children.Add(Separator()); statusRight.Children.Add(dirtyLabel);
         var info = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         fileLabel.MinWidth = 200; fileLabel.Foreground = fileSizeLabel.Foreground = dimensionsLabel.Foreground = EditorInk; fileSizeLabel.MinWidth = 125; dimensionsLabel.MinWidth = 160; info.Children.Add(fileLabel); info.Children.Add(Separator()); info.Children.Add(fileSizeLabel); info.Children.Add(Separator()); info.Children.Add(dimensionsLabel); status.Children.Add(info);
-        var work = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(250, 248, 243)), Margin = new Thickness(28, 12, 28, 8) };
+        var work = new DockPanel { Background = AppTheme.Soft, Margin = new Thickness(28, 12, 28, 8) };
         scroll.Background = Brushes.Transparent; scroll.HorizontalContentAlignment = HorizontalAlignment.Center; scroll.VerticalContentAlignment = VerticalAlignment.Center;
         work.Children.Add(scroll); root.Children.Add(work); Content = root;
         UpdateToolOptions(); UpdateHistoryButtons();
@@ -408,11 +408,11 @@ internal sealed class StrokeWidthSlider : FrameworkElement
         var trackOutline = new Pen(new SolidColorBrush(lightStroke ? Color.FromArgb(95, 48, 72, 91) : Color.FromArgb(70, 255, 255, 255)), 0.7) { LineJoin = PenLineJoin.Round };
         dc.DrawGeometry(trackBrush, trackOutline, shape);
         dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(32, 35, 92, 135)), null, new Rect(center - 9, y - 3, 18, 9), 4.5, 4.5);
-        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(77, 157, 211)), new Pen(Brushes.White, 1), new Rect(center - 9, y - 4, 18, 8), 4, 4);
+        dc.DrawRoundedRectangle(AppTheme.Accent, new Pen(Brushes.White, 1), new Rect(center - 9, y - 4, 18, 8), 4, 4);
         var text = new FormattedText($"{value:0} px", System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Microsoft YaHei UI"), 12, EditorSliderInk, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         dc.DrawText(text, new Point(42, y - text.Height / 2));
     }
-    private static readonly Brush EditorSliderInk = new SolidColorBrush(Color.FromRgb(49, 45, 42));
+    private static readonly Brush EditorSliderInk = AppTheme.Ink;
     private void SetFromPoint(Point point) { value = Math.Clamp(Math.Round(1 + (point.Y - TrackTop) / TrackHeight * 23), 1, 24); InvalidateVisual(); }
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e) { base.OnMouseLeftButtonDown(e); Focus(); CaptureMouse(); SetFromPoint(e.GetPosition(this)); e.Handled = true; }
     protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (IsMouseCaptured && e.LeftButton == MouseButtonState.Pressed) { SetFromPoint(e.GetPosition(this)); e.Handled = true; } }

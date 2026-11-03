@@ -28,10 +28,10 @@ internal static class ThemeScrollBars
                                         <Thumb x:Name="ScrollThumb" MinHeight="30" Focusable="False">
                                             <Thumb.Template>
                                                 <ControlTemplate TargetType="{x:Type Thumb}">
-                                                    <Border x:Name="ThumbSurface" Background="#B7CBD9" CornerRadius="2" Margin="3" />
+                                                    <Border x:Name="ThumbSurface" Background="{DynamicResource ThemeOutline}" CornerRadius="2" Margin="3" />
                                                     <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbSurface" Property="Background" Value="#78B9DF" /></Trigger>
-                                                        <Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbSurface" Property="Background" Value="#38A9E8" /></Trigger>
+                                                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbSurface" Property="Background" Value="{DynamicResource ThemeAccentHover}" /></Trigger>
+                                                        <Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbSurface" Property="Background" Value="{DynamicResource ThemeAccent}" /></Trigger>
                                                     </ControlTemplate.Triggers>
                                                 </ControlTemplate>
                                             </Thumb.Template>

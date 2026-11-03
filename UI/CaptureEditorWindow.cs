@@ -72,7 +72,8 @@ internal sealed partial class CaptureEditorWindow : Window
         Title = App.DisplayName + " Editor";
         Width = 1050; Height = 720; MinWidth = 650; MinHeight = 420;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        Background = new SolidColorBrush(Color.FromRgb(250, 248, 243));
+        Background = AppTheme.Soft;
+        Foreground = AppTheme.Ink;
         FontFamily = new FontFamily("Microsoft YaHei UI");
         BuildEditorLayout();
         canvas.LayoutTransform = zoomTransform;
@@ -93,17 +94,17 @@ internal sealed partial class CaptureEditorWindow : Window
         const string xaml = """
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="RadioButton">
-                <Setter Property="Foreground" Value="#273644"/><Setter Property="Padding" Value="10,7"/>
+                <Setter Property="Foreground" Value="{DynamicResource ThemeInk}"/><Setter Property="Padding" Value="10,7"/>
                 <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
                 <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
                     <Border x:Name="Frame" Background="Transparent" BorderBrush="Transparent" BorderThickness="0" CornerRadius="5" Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="#F1EBE2"/></Trigger>
-                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Frame" Property="Background" Value="#E8E0D5"/></Trigger>
-                        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="#C96B50"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger>
-                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="#C96B50"/></Trigger>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource ThemeHover}"/></Trigger>
+                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource ThemePressed}"/></Trigger>
+                        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource ThemeAccentDark}"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource ThemeAccentDark}"/></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate></Setter.Value></Setter>
             </Style>
@@ -115,13 +116,13 @@ internal sealed partial class CaptureEditorWindow : Window
         const string xaml = """
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="ComboBox">
-                <Setter Property="Height" Value="32"/><Setter Property="Foreground" Value="#273644"/>
-                <Setter Property="Background" Value="#FFFCF7"/><Setter Property="BorderBrush" Value="#E6DFD5"/>
+                <Setter Property="Height" Value="32"/><Setter Property="Foreground" Value="{DynamicResource ThemeInk}"/>
+                <Setter Property="Background" Value="{DynamicResource ThemeSurface}"/><Setter Property="BorderBrush" Value="{DynamicResource ThemeOutline}"/>
                 <Setter Property="ItemContainerStyle"><Setter.Value><Style TargetType="ComboBoxItem">
                     <Setter Property="Padding" Value="8,6"/><Setter Property="Background" Value="Transparent"/>
                     <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem">
                         <Border x:Name="Item" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
-                        <ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Item" Property="Background" Value="#F1EBE2"/></Trigger></ControlTemplate.Triggers>
+                        <ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Item" Property="Background" Value="{DynamicResource ThemeHover}"/></Trigger></ControlTemplate.Triggers>
                     </ControlTemplate></Setter.Value></Setter>
                 </Style></Setter.Value></Setter>
                 <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox">
@@ -131,16 +132,16 @@ internal sealed partial class CaptureEditorWindow : Window
                             <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="7"/></ControlTemplate></ToggleButton.Template>
                         </ToggleButton>
                         <ContentPresenter Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" Margin="8,0,22,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
-                        <Path Data="M 0,0 L 4,4 L 8,0" Stroke="#708090" StrokeThickness="1.3" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" IsHitTestVisible="False"/>
+                        <Path Data="M 0,0 L 4,4 L 8,0" Stroke="{DynamicResource ThemeMuted}" StrokeThickness="1.3" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" IsHitTestVisible="False"/>
                         <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False">
-                            <Border MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" Background="White" BorderBrush="#E6DFD5" BorderThickness="1" CornerRadius="8" Padding="4" Margin="0,4,0,0">
+                            <Border MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" Background="{DynamicResource ThemeSurface}" BorderBrush="{DynamicResource ThemeOutline}" BorderThickness="1" CornerRadius="8" Padding="4" Margin="0,4,0,0">
                                 <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
                             </Border>
                         </Popup>
                     </Grid>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Toggle" Property="Background" Value="#F1EBE2"/></Trigger>
-                        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Toggle" Property="BorderBrush" Value="#C96B50"/></Trigger>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Toggle" Property="Background" Value="{DynamicResource ThemeHover}"/></Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Toggle" Property="BorderBrush" Value="{DynamicResource ThemeAccentDark}"/></Trigger>
                         <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate></Setter.Value></Setter>

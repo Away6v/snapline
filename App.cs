@@ -36,6 +36,7 @@ public sealed class App : Application
     public static void Main()
     {
         var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        AppTheme.Initialize(app);
         ThemeScrollBars.Apply(app);
         ThemeToolTips.Apply(app);
         app.Run();
@@ -63,6 +64,7 @@ public sealed class App : Application
             var migrationFailures = Storage.MigrateInbox(state);
             var recovered = Storage.Recovered;
             Words.Language = state.Preferences.Language;
+            AppTheme.Apply(state.Preferences.Appearance);
             library = new CaptureLibrary(state);
             library.Error += Notify;
             library.RecoverInterrupted();
@@ -154,6 +156,7 @@ public sealed class App : Application
     private async Task ApplyTraySettingsAsync(bool refreshLine, bool rewatch)
     {
         Words.Language = state.Preferences.Language;
+        AppTheme.Apply(state.Preferences.Appearance);
         if (!library.Save()) throw new IOException(Words.T("设置未保存，本次更改可能只在当前运行期间生效。", "Settings were not saved; changes may only apply during this session."));
         if (!textLibrary.SetCapacity(state.Preferences.TextCapacity)) throw new IOException(Words.T("文本数量调整未保存。", "The text limit change was not saved."));
         if (rewatch) collectors!.Rewatch();

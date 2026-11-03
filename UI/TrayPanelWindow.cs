@@ -9,6 +9,8 @@ using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -58,6 +60,9 @@ internal sealed class TrayPanelWindow : Window
     private readonly ScrollViewer scroll;
     private readonly ContentControl header = new();
     private readonly ContentControl footer = new();
+    private readonly Grid pageLayer = new();
+    private readonly Grid layout = new();
+    private readonly TranslateTransform pageTranslation = new();
     private readonly SmoothScroll smoothScroll;
     private ComboBox? openCapacityChoice;
     private Button? updateButton;
@@ -65,6 +70,7 @@ internal sealed class TrayPanelWindow : Window
     private Page currentPage;
     private bool folderDialogOpen;
     private bool wasActivated;
+    private int transitionVersion;
     private string? message;
     private string settingsMode;
     private double maximumHeight = 560;
@@ -139,7 +145,6 @@ internal sealed class TrayPanelWindow : Window
         pauseTimer.Start();
         Closed += (_, _) => { smoothScroll.Stop(); pauseTimer.Stop(); };
         // 顶部品牌和底部退出操作独立于滚动区域，窗口受限时只滚动中间内容。
-        var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -150,7 +155,10 @@ internal sealed class TrayPanelWindow : Window
         layout.Children.Add(scroll);
         Grid.SetRow(footer, 2);
         layout.Children.Add(footer);
-        frame.Child = layout;
+        pageLayer.ClipToBounds = true;
+        layout.RenderTransform = pageTranslation;
+        pageLayer.Children.Add(layout);
+        frame.Child = pageLayer;
         Content = frame;
         Activated += (_, _) => wasActivated = true;
         Deactivated += (_, _) => { if (wasActivated && !folderDialogOpen && IsVisible) Close(); };
@@ -203,6 +211,32 @@ internal sealed class TrayPanelWindow : Window
 
     private void Navigate(Page page)
     {
+        var changingPage = IsVisible && currentPage != page;
+        var version = ++transitionVersion;
+        layout.BeginAnimation(OpacityProperty, null);
+        pageTranslation.BeginAnimation(TranslateTransform.XProperty, null);
+        layout.Opacity = 1;
+        pageTranslation.X = 0;
+        while (pageLayer.Children.Count > 1) pageLayer.Children.RemoveAt(pageLayer.Children.Count - 1);
+        Border? previousPage = null;
+        var direction = page == Page.Home ? -1 : 1;
+        if (changingPage && SystemParameters.ClientAreaAnimation && layout.ActualWidth > 0 && layout.ActualHeight > 0)
+        {
+            var dpi = VisualTreeHelper.GetDpi(layout);
+            var snapshot = new RenderTargetBitmap((int)Math.Ceiling(layout.ActualWidth * dpi.DpiScaleX),
+                (int)Math.Ceiling(layout.ActualHeight * dpi.DpiScaleY), dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+            snapshot.Render(layout);
+            previousPage = new Border
+            {
+                Background = Surface,
+                Child = new Image { Source = snapshot, Stretch = Stretch.Fill },
+                IsHitTestVisible = false,
+                RenderTransform = new TranslateTransform()
+            };
+            pageLayer.Children.Add(previousPage);
+            layout.Opacity = 0;
+            pageTranslation.X = direction * 12;
+        }
         currentPage = page;
         header.Content = page == Page.Home ? BrandHeader() : SubpageHeader(page);
         footer.Content = page == Page.Home ? ExitFooter() : null;
@@ -220,11 +254,31 @@ internal sealed class TrayPanelWindow : Window
         };
         smoothScroll.Stop();
         scroll.ScrollToTop();
-        FitHeight();
+        if (!changingPage) FitHeight();
+        if (previousPage != null)
+        {
+            var overlay = previousPage;
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (version != transitionVersion || !IsVisible) return;
+                var duration = TimeSpan.FromMilliseconds(220);
+                var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+                var fadeOut = new DoubleAnimation(1, 0, duration) { EasingFunction = easing };
+                fadeOut.Completed += (_, _) => pageLayer.Children.Remove(overlay);
+                overlay.BeginAnimation(OpacityProperty, fadeOut);
+                ((TranslateTransform)overlay.RenderTransform).BeginAnimation(TranslateTransform.XProperty,
+                    new DoubleAnimation(0, -direction * 6, duration) { EasingFunction = easing });
+                layout.Opacity = 1;
+                pageTranslation.X = 0;
+                layout.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, duration) { EasingFunction = easing });
+                pageTranslation.BeginAnimation(TranslateTransform.XProperty,
+                    new DoubleAnimation(direction * 12, 0, duration) { EasingFunction = easing });
+            }));
+        }
         // 控件模板和字体生效后重新测量，避免初次测量偏小而出现多余滚动条。
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
-            if (currentPage == page && IsVisible) FitHeight();
+            if (!changingPage && currentPage == page && IsVisible) FitHeight();
         }));
     }
 
@@ -457,9 +511,14 @@ internal sealed class TrayPanelWindow : Window
         panel.Children.Add(NavigationRow(Words.T("收集", "Collection"), IsCollectionPaused() ? Words.T("已暂停", "Paused") : Words.T("收集中", "Collecting"), Page.Collection));
         panel.Children.Add(ToggleRow(Words.T("登录 Windows 后启动", "Start with Windows"), StartupEnabled(), () =>
         {
+            var offset = scroll.VerticalOffset;
             try { SetStartup(!StartupEnabled()); message = null; }
             catch (Exception ex) { message = ex.Message; }
             Navigate(Page.Home);
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (currentPage == Page.Home && IsVisible) scroll.ScrollToVerticalOffset(offset);
+            }));
         }));
         panel.Children.Add(NavigationRow(Words.T("外观", "Appearance"), AppearanceText(), Page.Appearance));
         panel.Children.Add(NavigationRow(Words.T("界面语言", "Language"), preferences.Language == "zh" ? "简体中文" : "English", Page.Language));
@@ -788,7 +847,12 @@ internal sealed class TrayPanelWindow : Window
         foreach (var (code, title) in new[]
         {
             (LineAppearance.Hemp, Words.T("原木", "Natural wood")),
-            (LineAppearance.Classic, Words.T("马卡龙", "Macaron"))
+            (LineAppearance.Classic, Words.T("马卡龙", "Macaron")),
+            (LineAppearance.Forest, Words.T("森林", "Forest")),
+            (LineAppearance.Graphite, Words.T("曜黑", "Graphite")),
+            (LineAppearance.Denim, Words.T("牛仔", "Denim")),
+            (LineAppearance.Sakura, Words.T("樱花", "Sakura")),
+            (LineAppearance.Silver, Words.T("银影", "Silver"))
         })
         {
             var selected = preferences.Appearance == code;
@@ -810,9 +874,11 @@ internal sealed class TrayPanelWindow : Window
             choice.Click += async (_, _) =>
             {
                 if (preferences.Appearance == code) return;
+                var offset = scroll.VerticalOffset;
                 preferences.Appearance = code;
                 await Persist(true, false);
                 Navigate(Page.Appearance);
+                _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => scroll.ScrollToVerticalOffset(offset)));
             };
             panel.Children.Add(choice);
         }
@@ -841,11 +907,13 @@ internal sealed class TrayPanelWindow : Window
                 Effect = new DropShadowEffect { Color = Color.FromRgb(67, 57, 52), BlurRadius = 8, ShadowDepth = 2, Opacity = 0.12 }
             };
             if (preferences.DisplayMode == "text")
-                card.Child = new TextBlock { Text = Words.T("短文本预览\n长文本会自动折行并省略", "Text preview\nLong text wraps and truncates"), Foreground = Ink, FontSize = 9, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                card.Child = new TextBlock { Text = Words.T("短文本预览\n长文本会自动折行并省略", "Text preview\nLong text wraps and truncates"), Foreground = LineAppearance.CardText(appearance), FontSize = 9, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
             else if (index < samples.Length && samples[index].Thumbnail != null)
                 card.Child = new Image { Source = samples[index].Thumbnail, Stretch = Stretch.Uniform };
             else
-                card.Child = new Border { Background = new SolidColorBrush(index == 0 ? Color.FromRgb(242, 231, 224) : Color.FromRgb(231, 239, 237)), CornerRadius = new CornerRadius(4) };
+                card.Child = new Border { Background = new SolidColorBrush(appearance == LineAppearance.Graphite
+                    ? (index == 0 ? Color.FromRgb(0x49, 0x54, 0x5A) : Color.FromRgb(0x3C, 0x48, 0x50))
+                    : (index == 0 ? Color.FromRgb(242, 231, 224) : Color.FromRgb(231, 239, 237))), CornerRadius = new CornerRadius(4) };
             sample.Children.Add(card);
             sample.Children.Add(LineAppearance.Peg(appearance, index));
             Canvas.SetLeft(sample, 28 + index * 96);
@@ -1178,9 +1246,16 @@ internal sealed class TrayPanelWindow : Window
         else run.DeleteValue(App.DisplayName, false);
     }
 
-    private string AppearanceText() => preferences.Appearance == LineAppearance.Classic
-        ? Words.T("马卡龙", "Macaron")
-        : Words.T("原木", "Natural wood");
+    private string AppearanceText() => preferences.Appearance switch
+    {
+        LineAppearance.Classic => Words.T("马卡龙", "Macaron"),
+        LineAppearance.Forest => Words.T("森林", "Forest"),
+        LineAppearance.Graphite => Words.T("曜黑", "Graphite"),
+        LineAppearance.Denim => Words.T("牛仔", "Denim"),
+        LineAppearance.Sakura => Words.T("樱花", "Sakura"),
+        LineAppearance.Silver => Words.T("银影", "Silver"),
+        _ => Words.T("原木", "Natural wood")
+    };
 
     private static string ShortcutText(uint modifiers, uint key) =>
         ((modifiers & 2) != 0 ? "Ctrl+" : "") +

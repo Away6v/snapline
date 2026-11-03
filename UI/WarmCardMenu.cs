@@ -40,7 +40,7 @@ internal static class WarmCardMenu
             "remove" or "remove-all" => "trash", "⧉" => "copy", "✎" => "pencil",
             _ => "circle"
         };
-        var color = destructive ? new SolidColorBrush(Color.FromRgb(178, 82, 72)) : Accent;
+        var color = destructive ? AppTheme.Alert : Accent;
         var holder = new Grid { Width = 26, Height = 16, VerticalAlignment = VerticalAlignment.Center };
         holder.Children.Add(new LucideIcon(icon, color, 16) { HorizontalAlignment = HorizontalAlignment.Left });
         header.Children.Add(holder);

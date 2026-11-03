@@ -39,6 +39,7 @@ internal sealed class TextEntryWindow : Window
             Padding = new Thickness(12),
             FontSize = 14,
             Foreground = AppTheme.Ink,
+            CaretBrush = AppTheme.Ink,
             Background = AppTheme.Soft,
             BorderBrush = AppTheme.Outline,
             BorderThickness = new Thickness(0)
