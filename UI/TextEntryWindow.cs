@@ -83,7 +83,7 @@ internal sealed class TextEntryWindow : Window
         footer.Children.Add(actions);
         Grid.SetRow(footer, 1);
         layout.Children.Add(footer);
-        Content = layout;
+        Content = layout; ThemeWindow.Apply(this);
         Loaded += (_, _) => editor.Focus();
         PreviewKeyDown += (_, e) =>
         {
@@ -96,3 +96,4 @@ internal sealed class TextEntryWindow : Window
         };
     }
 }
+

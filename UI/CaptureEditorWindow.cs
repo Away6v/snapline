@@ -76,9 +76,11 @@ internal sealed partial class CaptureEditorWindow : Window
         Foreground = AppTheme.Ink;
         FontFamily = new FontFamily("Microsoft YaHei UI");
         BuildEditorLayout();
+        ThemeWindow.Apply(this);
         canvas.LayoutTransform = zoomTransform;
         canvas.Children.Add(image);
         scroll.Content = canvas;
+        scroll.PreviewMouseWheel += ZoomOnMouseWheel;
         canvas.MouseLeftButtonDown += MouseDownOnCanvas;
         canvas.MouseMove += MouseMoveOnCanvas;
         canvas.MouseLeftButtonUp += MouseUpOnCanvas;
@@ -204,6 +206,20 @@ internal sealed partial class CaptureEditorWindow : Window
         zoomLabel.Text = $"{zoom * 100:0}%";
         updatingZoomSlider = true; zoomSlider.Value = Math.Log(zoom, 2); updatingZoomSlider = false;
         RefreshCropOverlay();
+    }
+    private void ZoomOnMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (textEditing && textEditor != null && e.OriginalSource is DependencyObject source && (source == textEditor || source is Visual visual && visual.IsDescendantOf(textEditor))) return;
+        if (drawing || e.Delta == 0) { e.Handled = true; return; }
+        // 缩放前后保持鼠标指向的图片位置，避免画面跳动。
+        var imagePoint = e.GetPosition(canvas);
+        var before = canvas.TranslatePoint(imagePoint, scroll);
+        SetZoom(zoom * Math.Pow(1.25, e.Delta / 120.0));
+        scroll.UpdateLayout();
+        var after = canvas.TranslatePoint(imagePoint, scroll);
+        scroll.ScrollToHorizontalOffset(scroll.HorizontalOffset + after.X - before.X);
+        scroll.ScrollToVerticalOffset(scroll.VerticalOffset + after.Y - before.Y);
+        e.Handled = true;
     }
     private void Fit() => SetZoom(Math.Min(1, Math.Min(Math.Max(1, scroll.ViewportWidth - 20) / Current.PixelWidth, Math.Max(1, scroll.ViewportHeight - 20) / Current.PixelHeight)));
     private Point Position(MouseEventArgs e)
@@ -416,7 +432,7 @@ internal sealed partial class CaptureEditorWindow : Window
             saved = imageToSave; UpdateEditorStatus();
             if (closeAfter) { allowClose = true; Close(); }
         }
-        catch (Exception ex) { MessageBox.Show(this, Words.T("无法保存截图：", "Cannot save screenshot: ") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        catch (Exception ex) { ThemeMessageBox.Show(this, Words.T("无法保存截图：", "Cannot save screenshot: ") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); }
         finally { saving = false; root.IsEnabled = true; UpdateHistoryButtons(); }
     }
     private void OnClosing(object? sender, CancelEventArgs e)
@@ -450,3 +466,6 @@ internal sealed partial class CaptureEditorWindow : Window
         e.Handled = true;
     }
 }
+
+
+

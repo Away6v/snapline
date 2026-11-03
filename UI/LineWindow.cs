@@ -1606,7 +1606,7 @@ internal sealed class LineWindow : Window
             if (Process.Start(new ProcessStartInfo("explorer.exe", "/select, \"" + capture.Path + "\"") { UseShellExecute = true }) == null)
                 throw new InvalidOperationException(Words.T("无法启动文件资源管理器。", "Could not start File Explorer."));
         }
-        catch (Exception ex) { MessageBox.Show(Words.T("无法在文件夹中显示：", "Cannot show file in folder: ") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        catch (Exception ex) { ThemeMessageBox.Show(Words.T("无法在文件夹中显示：", "Cannot show file in folder: ") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
     private void SaveAs(Capture capture)
     {
@@ -1627,6 +1627,7 @@ internal sealed class LineWindow : Window
             var image = await Task.Run(() => CaptureLibrary.LoadFull(capture.Path));
             var preview = new Window { Title = App.DisplayName + " · " + Path.GetFileName(capture.Path), Width = 900, Height = 620, WindowStartupLocation = WindowStartupLocation.CenterScreen, Background = AppTheme.Surface };
             preview.Content = new Image { Source = image, Stretch = Stretch.Uniform, Margin = new Thickness(16) };
+            ThemeWindow.Apply(preview);
             preview.KeyDown += (_, e) => { if (e.Key == Key.Escape) preview.Close(); };
             ShowCaptureWindow(preview);
         }
@@ -1648,3 +1649,4 @@ internal sealed class LineWindow : Window
         }));
     }
 }
+

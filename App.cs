@@ -46,7 +46,7 @@ public sealed class App : Application
         base.OnStartup(e);
         noticeTimer.Tick += (_, _) => ShowNextNotice();
         instance = new Mutex(true, InstanceName, out var first);
-        if (!first) { MessageBox.Show(DisplayName + " 已在托盘运行 / is already running in the tray.", DisplayName); Shutdown(); return; }
+        if (!first) { ThemeMessageBox.Show(DisplayName + " 已在托盘运行 / is already running in the tray.", DisplayName); Shutdown(); return; }
         var updateAck = Environment.GetEnvironmentVariable("SNAPLINE_UPDATE_ACK");
         var updateToken = Environment.GetEnvironmentVariable("SNAPLINE_UPDATE_TOKEN");
         DispatcherTimer? progressTimer = null;
@@ -106,7 +106,7 @@ public sealed class App : Application
                 : Words.T("配置无法读取，已从备份恢复；原配置已保留为恢复副本。", "The state was restored from a backup; the original was kept as a recovery copy."));
             if (!state.Preferences.OnboardingComplete)
             {
-                MessageBox.Show(Words.T(
+                ThemeMessageBox.Show(Words.T(
                     "欢迎使用截图晾衣绳！\n\n已默认开启剪贴板截图与文本收集，内容仅保存在本机。复制的文件及本应用复制的内容会被忽略。\n\n鼠标停留屏幕顶部，或按 Ctrl+Alt+T 展开。托盘右键面板可切换“文本 / 截图”、新建文本及调整收集设置。\n\n截图卡片可复制、预览、编辑或拖出分享；文本卡片可复制、查看和编辑。\n\n右键托盘图标打开控制面板。检查更新时会连接 GitHub，内容不会上传。",
                     "Welcome to SnapLine!\n\nClipboard image and text collection are on by default. Content stays on this device. Copied files and SnapLine's own copies are ignored.\n\nRest the pointer at the top edge or use the show shortcut. Right-click the tray icon to switch between Text and Screenshots, create text, and adjust collection settings.\n\nScreenshot cards can be copied, previewed, edited, or dragged to share. Text cards can be copied, viewed, and edited.\n\nChecking for updates connects to GitHub. Your content is not uploaded.").Replace("Ctrl+Alt+T", IsDevelopment ? "Ctrl+Alt+Shift+T" : "Ctrl+Alt+T"), DisplayName, MessageBoxButton.OK, MessageBoxImage.Information);
                 state.Preferences.OnboardingComplete = true;
@@ -122,7 +122,8 @@ public sealed class App : Application
         catch (Exception ex)
         {
             progressTimer?.Stop();
-            MessageBox.Show(Words.T(DisplayName + " 无法启动：\n", DisplayName + " could not start:\n") + ex.Message, DisplayName, MessageBoxButton.OK, MessageBoxImage.Error);
+            try { ThemeMessageBox.Show(Words.T(DisplayName + " 无法启动：\n", DisplayName + " could not start:\n") + ex.Message, DisplayName, MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch { MessageBox.Show(DisplayName + " 无法启动 / could not start:\n" + ex.Message, DisplayName, MessageBoxButton.OK, MessageBoxImage.Error); }
             Shutdown(1);
         }
     }
@@ -238,7 +239,7 @@ public sealed class App : Application
             var missing = BackupService.CountMissingExternalImages(dialog.FileName);
             var warning = Words.T("恢复将替换当前本地数据并重启 SnapLine。", "Restoring replaces current local data and restarts SnapLine.");
             if (missing > 0) warning += Words.T($"\n\n备份中的 {missing} 张外部截图在此电脑上不可用，恢复后这些图片将无法显示。", $"\n\n{missing} external images in this backup are unavailable on this computer and will not be displayed after restoring.");
-            if (MessageBox.Show(warning, "SnapLine", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+            if (ThemeMessageBox.Show(warning, "SnapLine", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
             BackupService.RestoreAndRestart(dialog.FileName);
             Shutdown();
         }
@@ -284,3 +285,4 @@ internal sealed class UpdateStatus
     internal string? Text;
     internal UpdateRelease? Release;
 }
+

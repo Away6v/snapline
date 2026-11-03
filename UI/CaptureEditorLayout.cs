@@ -40,6 +40,21 @@ internal sealed partial class CaptureEditorWindow
         return button;
     }
 
+    private static readonly Style ZoomSliderStyle = (Style)System.Windows.Markup.XamlReader.Parse("""
+        <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Slider">
+            <Setter Property="Height" Value="28"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Slider">
+                <Grid>
+                    <Border Height="5" Margin="7,0" CornerRadius="3" Background="{DynamicResource ThemeOutline}"/>
+                    <Track x:Name="PART_Track">
+                        <Track.DecreaseRepeatButton><RepeatButton Command="Slider.DecreaseLarge" Background="{DynamicResource ThemeAccent}" Focusable="False"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="{TemplateBinding Background}" Height="5" Margin="7,0,0,0" CornerRadius="3" VerticalAlignment="Center"/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>
+                        <Track.Thumb><Thumb Width="16" Height="16"><Thumb.Template><ControlTemplate TargetType="Thumb"><Border x:Name="Knob" Background="{DynamicResource ThemeSurface}" BorderBrush="{DynamicResource ThemeAccent}" BorderThickness="2" CornerRadius="8"/><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Knob" Property="Background" Value="{DynamicResource ThemeHover}"/></Trigger><Trigger Property="IsDragging" Value="True"><Setter TargetName="Knob" Property="Background" Value="{DynamicResource ThemePressed}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Knob" Property="BorderBrush" Value="{DynamicResource ThemeAccentDark}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
+                        <Track.IncreaseRepeatButton><RepeatButton Command="Slider.IncreaseLarge" Opacity="0" Focusable="False"/></Track.IncreaseRepeatButton>
+                    </Track>
+                </Grid>
+            </ControlTemplate></Setter.Value></Setter>
+        </Style>
+        """);
     private static readonly Style EditorButtonStyle = CreateEditorButtonStyle(false);
     private static readonly Style EditorPrimaryButtonStyle = CreateEditorButtonStyle(true);
     private static Style CreateEditorButtonStyle(bool primary)
@@ -155,9 +170,9 @@ internal sealed partial class CaptureEditorWindow
         {
             colorPopup.IsOpen = false;
             var current = ((SolidColorBrush)ColorBrush()).Color;
-            using var dialog = new System.Windows.Forms.ColorDialog { FullOpen = true, Color = System.Drawing.Color.FromArgb(current.R, current.G, current.B) };
-            if (dialog.ShowDialog(new EditorDialogOwner(new System.Windows.Interop.WindowInteropHelper(this).Handle)) != System.Windows.Forms.DialogResult.OK) return;
-            customColor = new SolidColorBrush(Color.FromRgb(dialog.Color.R, dialog.Color.G, dialog.Color.B));
+            var dialog = new ColorPickerWindow(this, current);
+            if (dialog.ShowDialog() != true) return;
+            customColor = new SolidColorBrush(dialog.SelectedColor);
             colors.SelectedIndex = 6;
             RefreshColor();
         };
@@ -193,6 +208,7 @@ internal sealed partial class CaptureEditorWindow
         DockPanel.SetDock(statusRight, Dock.Right); status.Children.Add(statusRight);
         statusRight.Children.Add(EditorButton("适应画布", "Fit to window", "scan", Fit, width: 32));
         statusRight.Children.Add(EditorButton("缩小", "Zoom out", "zoom-out", () => SetZoom(zoom / 1.25), width: 30));
+        zoomSlider.Style = ZoomSliderStyle;
         zoomSlider.ToolTip = Words.T("缩放比例", "Zoom");
         AutomationProperties.SetName(zoomSlider, Words.T("缩放比例", "Zoom"));
         zoomSlider.ValueChanged += (_, _) => { if (!updatingZoomSlider) SetZoom(Math.Pow(2, zoomSlider.Value)); };
@@ -206,11 +222,6 @@ internal sealed partial class CaptureEditorWindow
         scroll.Background = Brushes.Transparent; scroll.HorizontalContentAlignment = HorizontalAlignment.Center; scroll.VerticalContentAlignment = VerticalAlignment.Center;
         work.Children.Add(scroll); root.Children.Add(work); Content = root;
         UpdateToolOptions(); UpdateHistoryButtons();
-    }
-
-    private sealed class EditorDialogOwner(IntPtr handle) : System.Windows.Forms.IWin32Window
-    {
-        public IntPtr Handle => handle;
     }
 
     private void ConfigureExistingButton(Button target, string zh, string en, string geometry, Action action, bool primary = false)
@@ -336,7 +347,7 @@ internal sealed partial class CaptureEditorWindow
         AddAction(Words.T("取消", "Cancel"), MessageBoxResult.Cancel, ThemeButtons.Secondary, true);
         AddAction(Words.T("不保存", "Don't save"), MessageBoxResult.No, ThemeButtons.Secondary);
         AddAction(Words.T("保存", "Save"), MessageBoxResult.Yes, ThemeButtons.Primary);
-        layout.Children.Add(actions); dialog.Content = layout; dialog.ShowDialog();
+        layout.Children.Add(actions); dialog.Content = layout; ThemeWindow.Apply(dialog); dialog.ShowDialog();
         return result;
     }
 
@@ -369,7 +380,7 @@ internal sealed partial class CaptureEditorWindow
             encoder.Frames.Add(BitmapFrame.Create(Current));
             using var stream = new FileStream(dialog.FileName, FileMode.Create, FileAccess.Write, FileShare.None); encoder.Save(stream);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException) { MessageBox.Show(this, Words.T("无法另存截图：", "Cannot save screenshot: ") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException) { ThemeMessageBox.Show(this, Words.T("无法另存截图：", "Cannot save screenshot: ") + ex.Message, "SnapLine", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 }
 
@@ -419,3 +430,6 @@ internal sealed class StrokeWidthSlider : FrameworkElement
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) { base.OnMouseLeftButtonUp(e); if (IsMouseCaptured) { SetFromPoint(e.GetPosition(this)); ReleaseMouseCapture(); e.Handled = true; } }
     protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (e.Key is Key.Up or Key.Down) { value = Math.Clamp(value + (e.Key == Key.Down ? 1 : -1), 1, 24); InvalidateVisual(); e.Handled = true; } }
 }
+
+
+
